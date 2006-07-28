@@ -235,7 +235,7 @@ stream_wrapper_register('smb', 'samba_stream') or die('Failed to register protoc
 # testing ...
 
 /*
-$f = fopen('smb://victor:victor@nashki/Archivos/samba/UPO.doc', 'r');
+$f = fopen('smb://nashki/Archivos/samba/UPO.doc', 'r');
 $stat = fstat($f);
 print_r($stat);
 fclose($f);
@@ -249,13 +249,11 @@ fclose($f);
 
 # unlink('smb://nashki/Archivos/samba/prueba.txt');
 # rmdir ('smb://nashki/Archivos/samba/xxx');
-# mkdir('smb://victor:queypo@bubion/victor/xxx');
-# rename('smb://victor:queypo@bubion/victor/xxx', 'smb://victor:queypo@bubion/victor/xxy');
 
-$d = opendir('smb://victor:queypo@network/dominio');
+$d = opendir('smb://network/dominio');
 /*
 while (($s = readdir($d)) !== false)
-      {$t = filetype('smb://victor:queypo@network/'.$s); echo "$s : $t\n";}*/
+      {$t = filetype('smb://network/'.$s); echo "$s : $t\n";}*/
 closedir($d);
 
 ?>
