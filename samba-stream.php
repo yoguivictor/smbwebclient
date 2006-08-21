@@ -38,8 +38,8 @@ private static $__regexp = array
   "^\tWorkgroup[ ]+Master\$" => L_WORKG,
   "^\t(.*)[ ]+(Disk|IPC)[ ]+IPC.*\$" => L_SKIP,
   "^\tIPC\\\$(.*)[ ]+IPC" => L_SKIP,
-  "^\t(.*)[ ]+(Disk|Printer)[ ]+(.*)\$" => l_share,
-  '([0-9]+) blocks of size ([0-9]+)\. ([0-9]+) blocks available' => l_size,
+  "^\t(.*)[ ]+(Disk|Printer)[ ]+(.*)\$" => L_SHARE,
+  '([0-9]+) blocks of size ([0-9]+)\. ([0-9]+) blocks available' => L_SIZE,
   'Got a positive name query response from ' => L_SKIP,
   "^(session setup failed): (.*)\$" => L_ERROR,
   '^(.*): ERRSRV - ERRbadpw' => L_ERROR,
@@ -91,7 +91,7 @@ public function stream_open ($path, $mode, $options, $opened_path)
           case 'w':
                $this->tmpfile = tempnam('/tmp', 'smb.up.');
                $this->stream = fopen($this->tmpfile, 'w');}
-  return TRUE;}}
+  return TRUE;}
 
 ## This method is called when the stream is closed, using fclose(). You must
 ## release any resources that were locked or allocated by the stream.
@@ -205,8 +205,8 @@ public function rmdir ($path, $options)
 ## passed to opendir() and that this object is expected to explore. You can use
 ## parse_url()  to break it apart.
 public function dir_opendir ($path, $options)
- {list($this->path, $type) = array(parse_url($path), $this->query_type());
-  switch ($type)
+ {$this->path = parse_url($path);
+  switch ($type = $this->query_type())
          {case 'workgroup':
                $browser = $this->get_master_server($this->get_rname());
                $saved = $this->get_servers();
@@ -216,7 +216,9 @@ public function dir_opendir ($path, $options)
                $this->set_servers($saved);
                break;
           case 'network': $this->dir = $this->get_workgroups(); break;
-          case 'server':  $this->dir = $this->get_shares();  break;
+          case 'server':
+               $this->dir = $this->get_shares($this->get_user(), $this->get_server());
+               break;
           default:        $this->dir = $this->get_files();}
   return true;}
 
@@ -296,18 +298,12 @@ private function get_files ($path='')
       ($this->get_user(),
        $this->get_server(),
        $this->get_rname(),
-       ($path == '') ? $this->get_rpath() : $path));
+       ($path == '') ? $this->get_rpath() : $path);
   if (! isset(samba_stream::$__cache['smbclient'][$u][$h][$s][$p]))
      {$this->smbclient_do('cd "'.$p.'"; dir');}
   if (! isset(samba_stream::$__cache['smbclient'][$u][$h][$s][$p]))
-     {trigger_error("path does not exist //$h/$s/$p");}
+     {print $p; print_r(samba_stream::$__cache); trigger_error("path does not exist //$h/$s/$p");}
   return array_keys(samba_stream::$__cache['smbclient'][$u][$h][$s][$p]);}
-
-private function get_shares ()
- {list ($u, $s) = array($this->get_user(), $this->get_server());
-  if (! isset(samba_stream::$__cache['smbclient'][$u][$s]))
-     {$this->smbclient_list();}
-  return array_keys(samba_stream::$__cache['smbclient'][$u][$s]);}
 
 private function get_servers ()
  {if (! isset(samba_stream::$__cache['servers']))
@@ -334,13 +330,13 @@ private function get_master_server ($wg)
      {return '?';}}}
 
 private function get_browser_server ()
- {return ($b = $this->get_config('network_browser')) == '') ? 'localhost' : $b;}
+ {return ($b = $this->get_config('network_browser')) == '' ? 'localhost' : $b;}
 
 private function query_type ($path='', $server='')
  {list($p, $s) = array
       (($path == '') ? $this->get_path() : $this->fix_path($path),
-       ($server == '') ? $this->get_server() : $server));
-  if ($h == 'network')
+       ($server == '') ? $this->get_server() : $server);
+  if ($s == 'network')
      {return ($p == '/') ? 'network' : 'workgroup';}
   else
      {return ($p == '/') ? 'server' : (substr_count($p, '/') > 1 ? '?' : 'share');}}
@@ -369,11 +365,11 @@ private function smbclient_do ($command)
 private function smbclient_list ($server='')
  {list($u, $s) = array
       ($this->get_user(), ($server == '') ? $this->get_server() : $server);
-  if (! isset(samba_stream::$__cache['smbclient'][$u][$s]))
+  if (! $this->get_shares($u, $s))
      {putenv('USER='.$this->get_user().'%'.$this->get_pass());
       $cmd = 'smbclient -L '.escapeshellarg($h).' -d 0';
       $this->parse_smbclient($cmd);}
-  return samba_stream::$__cache['smbclient'][$u][$s];}
+  return $this->get_shares($u, $s);}
 
 private function parse_time ($m, $d, $y, $hhiiss)
  {list ($his, $im) = array
@@ -390,18 +386,14 @@ private function parse_share ($line)
        && $type == 'printer');
   if (! $skip)
      {list($u, $h) = array($this->get_user(), $this->get_server());
-      samba_stream::$__cache['smbclient'][$u][$h][$name] = $type;}}
+      $this->add_share($u, $h, $name, $type);}}
 
 private function parse_srvorwg ($line, $mode = 'servers')
  {$name = trim(substr($line,1,21));
   if ($mode == 'servers') $name = strtolower($name);
-     $master = strtolower(trim(substr($line, 22)));
-  if ($mode == 'servers' && ! in_array($name, (array) $this->get_servers()))
-     {samba_stream::$__cache['servers'][] = $name;}
-  else
-     {samba_stream::$__cache['workgroups'][$name] = $master;
-      if (! in_array($master, samba_stream::$__cache['servers']))
-         {samba_stream::$__cache['servers'][] = $master;}}}
+  $master = strtolower(trim(substr($line, 22)));
+  if ($mode == 'servers') $this->add_server($name);
+  else $this->add_workgroup($name, $master);}
 
 private function parse_file ($regs)
   {if (preg_match("/^(.*)[ ]+([D|A|H|S|R]+)$/", trim($regs[1]), $regs2))
@@ -411,12 +403,12 @@ private function parse_file ($regs)
    if ($name <> '.' && $name <> '..')
       {$type = (strpos($attr,'D') === FALSE) ? 'file' : 'folder';
    list($u, $h, $s, $p) = array
-       ($this->get_user(), $this->get_server(), $this->get_rname(), $this->get_rpath()));
-   samba_stream::$__cache['smbclient'][$u][$h][$s][$p][$name] = array
+       ($this->get_user(), $this->get_server(), $this->get_rname(), $this->get_rpath());
+   $this->set_info($u, $h, $s, $p, $name, array
     ('attr' => $attr,
      'size' => $regs[2],
      'time' => $this->parse_time($regs[4],$regs[5],$regs[7],$regs[6]),
-     'type' => $type);}}
+     'type' => $type));}}
 
 private function get_info($user, $server, $rname, $rpath)
  {$ppath = $this->fix_path(dirname($rpath));
@@ -432,7 +424,30 @@ private function get_info($user, $server, $rname, $rpath)
   if (! isset(samba_stream::$__cache['smbclient'][$user][$server][$rname][$ppath][$name]))
      {trigger_error("object does not exist //$server/$rname/$ppath/$name", E_USER_ERROR);}
   return samba_stream::$__cache['smbclient'][$user][$server][$rname][$ppath][$name];}
-                    
+
+private function set_info($user, $server, $rname, $rpath, $name, $value)
+ {$ppath = $this->fix_path($rpath);
+  samba_stream::$__cache['smbclient'][$user][$server][$rname][$rpath] = $value;}
+
+private function add_server ($server)
+ {if (! $this->is_server($server))
+     {samba_stream::$__cache['servers'][] = $server;}}
+
+private function is_server ($server)
+ {return (! in_array($server, samba_stream::$__cache['servers']));}
+
+private function add_workgroup ($workgroup, $master)
+ {samba_stream::$__cache['workgroups'][$workgroup] = $master;
+  $this->add_server($master);}
+
+private function add_share ($user, $server, $share, $type)
+ {samba_stream::$__cache['shares'][$user][$server][$share] = $type;}
+
+private function get_shares ($user, $server)
+ {return (isset(samba_stream::$__cache['shares'][$user][$server]))
+         ? samba_stream::$__cache['shares'][$user][$server]
+         : FALSE;}
+
 private function parse_job ($regs)
  {list($name, $u, $h, $printer) = array
       ($regs[1].' '.$regs[3], $this->get_user(), $this->get_server(), $this->get_rname());
@@ -455,10 +470,12 @@ private function get_linetype ($line)
            return array($line_type, $regs);}
 
 private function parse_smbclient ($cmd)
- {$output = popen($cmd.' 2>&1', 'r');
+ {print "{debug: $cmd}\n";
+  $output = popen($cmd.' 2>&1', 'r');
   while (! feof($output))
         {$line = fgets($output, 4096);
          list($line_type, $regs) = $this->get_linetype($line);
+         print "$line:$line_type\n";
          switch ($line_type)
                 {case L_SKIP:    continue;
                  case L_SHARES:  $mode = 'shares';     break;
@@ -470,7 +487,7 @@ private function parse_smbclient ($cmd)
                  case L_JOBS:    $this->parse_job($regs); break;
                  case L_SIZE:    $this->parse_size($regs); break;
 		         case L_ERROR:   trigger_error('error '.$regs[1], E_USER_ERROR);}}
-  pclose($output);}}
+  pclose($output);}
 
 
 }
