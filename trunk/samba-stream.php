@@ -2,20 +2,8 @@
 ## $Id$
 ## by Victor M. Varela <vmvarela@gmail.com>
 
-## output lines detected
-define ('L_SKIP', 1);
-define ('L_SHARES', 2);
-define ('L_SERVERS', 3);
-define ('L_WORKG', 4);
-define ('L_SHARE', 5);
-define ('L_SIZE', 6);
-define ('L_ERROR', 7);
-define ('L_SRVORWG', 8);
-define ('L_JOBS', 9);
-define ('L_CANCEL', 10);
-define ('L_FILES', 11);
+############## A 'smb' stream wrapper class using 'smbclient' #################
 
-## A 'smb' stream wrapper class for PHP5 using 'smbclient'
 class samba_stream {
 
 private static $__cache = array
@@ -28,40 +16,42 @@ private static $__config = array
   'hide_printer_shares' => false);
 
 private static $__regexp = array
- ("^added interface ip=(.*) bcast=(.*) nmask=(.*)\$" => L_SKIP,
-  "Anonymous login successful" => L_SKIP,
-  "^Domain=\[(.*)\] OS=\[(.*)\] Server=\[(.*)\]\$" => L_SKIP,
-  "^\tSharename[ ]+Type[ ]+Comment\$" => L_SHARES,
-  "^\t---------[ ]+----[ ]+-------\$" => L_SKIP,
-  "^\tServer   [ ]+Comment\$" => L_SERVERS,
-  "^\t---------[ ]+-------\$" => L_SKIP,
-  "^\tWorkgroup[ ]+Master\$" => L_WORKG,
-  "^\t(.*)[ ]+(Disk|IPC)[ ]+IPC.*\$" => L_SKIP,
-  "^\tIPC\\\$(.*)[ ]+IPC" => L_SKIP,
-  "^\t(.*)[ ]+(Disk|Printer)[ ]+(.*)\$" => L_SHARE,
-  '([0-9]+) blocks of size ([0-9]+)\. ([0-9]+) blocks available' => L_SIZE,
-  'Got a positive name query response from ' => L_SKIP,
-  "^(session setup failed): (.*)\$" => L_ERROR,
-  '^(.*): ERRSRV - ERRbadpw' => L_ERROR,
-  "^Error returning browse list: (.*)\$" => L_ERROR,
-  "^tree connect failed: (.*)\$" => L_ERROR,
-  "^(Connection) to .* failed\$" => L_ERROR,
-  '^NT_STATUS_(.*) ' => L_ERROR,
-  '^NT_STATUS_(.*)\$' => L_ERROR,
-  'ERRDOS - ERRbadpath \((.*).\)' => L_ERROR,
-  'cd (.*): (.*)\$' => L_ERROR,
-  '^cd (.*): NT_STATUS_(.*)' => L_ERROR,
-  "^\t(.*)\$" => L_SRVORWG,
-  "^([0-9]+)[ ]+([0-9]+)[ ]+(.*)\$" => L_JOB,
-  "^Job ([0-9]+) cancelled" => L_CANCEL,
-  '^[ ]+(.*)[ ]+([0-9]+)[ ]+(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[ ](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ ]+([0-9]+)[ ]+([0-9]{2}:[0-9]{2}:[0-9]{2})[ ]([0-9]{4})$' => L_FILES,
-  "^message start: ERRSRV - (ERRmsgoff)" => L_ERROR);
+ ("^added interface ip=(.*) bcast=(.*) nmask=(.*)\$" => 'skip',
+  "Anonymous login successful" => 'skip',
+  "^Domain=\[(.*)\] OS=\[(.*)\] Server=\[(.*)\]\$" => 'skip',
+  "^\tSharename[ ]+Type[ ]+Comment\$" => 'shares',
+  "^\t---------[ ]+----[ ]+-------\$" => 'skip',
+  "^\tServer   [ ]+Comment\$" => 'servers',
+  "^\t---------[ ]+-------\$" => 'skip',
+  "^\tWorkgroup[ ]+Master\$" => 'workg',
+  "^\t(.*)[ ]+(Disk|IPC)[ ]+IPC.*\$" => 'skip',
+  "^\tIPC\\\$(.*)[ ]+IPC" => 'skip',
+  "^\t(.*)[ ]+(Disk|Printer)[ ]+(.*)\$" => 'share',
+  '([0-9]+) blocks of size ([0-9]+)\. ([0-9]+) blocks available' => 'size',
+  'Got a positive name query response from ' => 'skip',
+  "^(session setup failed): (.*)\$" => 'error',
+  '^(.*): ERRSRV - ERRbadpw' => 'error',
+  "^Error returning browse list: (.*)\$" => 'error',
+  "^tree connect failed: (.*)\$" => 'error',
+  "^(Connection) to .* failed\$" => 'error',
+  '^NT_STATUS_(.*) ' => 'error',
+  '^NT_STATUS_(.*)\$' => 'error',
+  'ERRDOS - ERRbadpath \((.*).\)' => 'error',
+  'cd (.*): (.*)\$' => 'error',
+  '^cd (.*): NT_STATUS_(.*)' => 'error',
+  "^\t(.*)\$" => 'srvorwg',
+  "^([0-9]+)[ ]+([0-9]+)[ ]+(.*)\$" => 'L_JOB',
+  "^Job ([0-9]+) cancelled" => 'L_CANCEL',
+  '^[ ]+(.*)[ ]+([0-9]+)[ ]+(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[ ](Jan|Feb|Mar|Apr|'.
+  'May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ ]+([0-9]+)[ ]+([0-9]{2}:[0-9]{2}:[0-9]{2})'.
+  '[ ]([0-9]{4})$' => 'files',
+  "^message start: ERRSRV - (ERRmsgoff)" => 'error');
 
 private $url, $path, $mode, $flags=0, $type='?', $stream, $tmpfile='';
 private $dir, $dir_index=0;
 
 ## This method is called immediately after your stream object is created.
-## - path specifies the URL that was passed to fopen() and that this object is
+## - url specifies the URL that was passed to fopen() and that this object is
 ##   expected to retrieve. You can use parse_url()  to break it apart.
 ## - mode is the mode used to open the file, as detailed for fopen(). You are
 ##   responsible for checking that mode is valid for the path requested.
@@ -77,24 +67,24 @@ private $dir, $dir_index=0;
 ## you should set opened_path to the full path of the file/resource that was
 ## actually opened.
 ## If the requested resource was opened successfully, you should return TRUE,
-## otherwise you should return FALSE 
-public function stream_open ($path, $mode, $options, $opened_path)
- {list($this->url, $this->path, $this->mode) = array($path, parse_url($path), $mode);
+## otherwise you should return FALSE
+## 
+public function stream_open ($url, $mode, $options, $opened_path)
+ {list($this->url, $this->parsed_url, $this->mode) =
+      array($url, parse_url($url), $mode);
   if ($mode <> 'r' && $mode <> 'w')
      {trigger_error('only r/w modes allowed', E_USER_ERROR);}
   if ($this->query_type() <> '?')
      {trigger_error('error in path', E_USER_ERROR);}
   switch ($mode)
-         {case 'r':
-               $this->download();
-               break;
-          case 'w':
-               $this->tmpfile = tempnam('/tmp', 'smb.up.');
-               $this->stream = fopen($this->tmpfile, 'w');}
+         {case 'r':  $this->download(); break;
+          case 'w':  $this->tmpfile = tempnam('/tmp', 'smb.up.');
+                 $this->stream = fopen($this->tmpfile, 'w');}
   return TRUE;}
 
 ## This method is called when the stream is closed, using fclose(). You must
 ## release any resources that were locked or allocated by the stream.
+##
 public function stream_close () {return fclose($this->stream);}
 
 ## This method is called in response to fread()  and fgets() calls on the
@@ -103,6 +93,7 @@ public function stream_close () {return fclose($this->stream);}
 ## as many as are available. If no more data is available, return either FALSE
 ## or an empty string. You must also update the read/write position of the
 ## stream by the number of bytes that were successfully read.
+##
 public function stream_read ($count) {return fread($this->stream, $data);}
 
 ## This method is called in response to fwrite()  calls on the stream. You
@@ -111,21 +102,25 @@ public function stream_read ($count) {return fread($this->stream, $data);}
 ## the number of bytes that were successfully stored in the stream, or 0 if none
 ## could be stored. You must also update the read/write position of the stream
 ## by the number of bytes that were successfully written.
+##
 public function stream_write ($data) {return fwrite($this->stream, $data);}
 
 ## This method is called in response to feof()  calls on the stream. You should
 ## return TRUE if the read/write position is at the end of the stream and if no
 ## more data is available to be read, or FALSE otherwise.
+##
 public function stream_eof () {return feof($this->stream);}
 
 ## This method is called in response to ftell()  calls on the stream. You should
 ## return the current read/write position of the stream.
+##
 public function stream_tell () {return ftell($this->stream);}
 
 ## This method is called in response to fseek()  calls on the stream. You should
 ## update the read/write position of the stream according to offset and whence.
 ## See fseek()  for more information about these parameters. Return TRUE if the
 ## position was updated, FALSE otherwise.
+##
 public function stream_seek ($offset, $whence=null)
  {return fseek($this->stream, $offset, $whence);}
 
@@ -134,6 +129,7 @@ public function stream_seek ($offset, $whence=null)
 ## storage, you should do so now. Return TRUE if the cached data was
 ## successfully stored (or if there was no data to store), or FALSE if the data
 ## could not be stored.
+##
 public function stream_flush ()
  {if ($mode == 'w')
      {$rp = $this->get_rpath();
@@ -141,6 +137,7 @@ public function stream_flush ()
 
 ## This method is called in response to fstat()  calls on the stream and should
 ## return an array containing the same values as appropriate for the stream. 
+##
 public function stream_stat () {return $this->url_stat($this->get_url());}
 
 ## This method is called in response to unlink()  calls on URL paths associated
@@ -149,10 +146,11 @@ public function stream_stat () {return $this->url_stat($this->get_url());}
 ## appropriate error message to be returned, do not define this method if your
 ## wrapper does not support unlinking.
 ## Note: Userspace wrapper unlink method is not supported prior to PHP 5.0.0.
-public function unlink ($path)
- {$this->path = parse_url($path);
+##
+public function unlink ($url)
+ {$this->parsed_url = parse_url($url);
   if ($this->query_type() <> '?')
-     {trigger_error('error in path', E_USER_ERROR);}
+     {trigger_error('error in url', E_USER_ERROR);}
   $rp = $this->get_rpath();
   $cmd = 'cd "'.dirname($rp)           # I don't know how to delete
        . '"; del "'.basename($rp).'"'; # files without chdir first
@@ -165,10 +163,11 @@ public function unlink ($path)
 ## do not define this method if your wrapper does not support renaming.
 ## Note: Userspace wrapper rename method is not supported prior to PHP 5.0.0.
 ## FIX: this function only renames files/folders in same path 
-public function rename ($path_from, $path_to)
- {$this->path = parse_url($path_from);
+##
+public function rename ($url_from, $path_to)
+ {$this->parsed_url = parse_url($url_from);
   if ($this->query_type() <> '?')
-     {trigger_error('error in path_from', E_USER_ERROR);}
+     {trigger_error('error in url_from', E_USER_ERROR);}
   $rp = $this->get_rpath();
   $cmd = 'cd "'. dirname($rp)
                . '"; rename "'
@@ -183,9 +182,10 @@ public function rename ($path_from, $path_to)
 ## wrapper does not support creating directories. Posible values for options
 ## include STREAM_REPORT_ERRORS and STREAM_MKDIR_RECURSIVE.
 ## Note: Userspace wrapper mkdir method is not supported prior to PHP 5.0.0. 
-public function mkdir ($path, $mode, $options)
- {$this->path = parse_url($path);
-  if ($this->query_type() <> '?') {trigger_error('error in path', E_USER_ERROR);}
+##
+public function mkdir ($url, $mode, $options)
+ {$this->parsed_url = parse_url($url);
+  if ($this->query_type() <> '?') {trigger_error('error in url', E_USER_ERROR);}
   return $this->smbclient_do('mkdir "'.$this->get_rpath().'"');}
 
 ## This method is called in response to rmdir()  calls on URL paths associated
@@ -195,17 +195,19 @@ public function mkdir ($path, $mode, $options)
 ## wrapper does not support removing directories. Possible values for options
 ## include STREAM_REPORT_ERRORS.
 ## Note: Userspace wrapper rmdir method is not supported prior to PHP 5.0.0. 
-public function rmdir ($path, $options)
- {$this->path = parse_url($path);
-  if ($this->query_type() <> '?') {trigger_error('error in path', E_USER_ERROR);}
+##
+public function rmdir ($url, $options)
+ {$this->parsed_url = parse_url($url);
+  if ($this->query_type() <> '?') {trigger_error('error in url', E_USER_ERROR);}
   return $this->smbclient_do('rmdir "'.$this->get_rpath().'"');}
 
 ## This method is called immediately when your stream object is created for
 ## examining directory contents with opendir(). path specifies the URL that was
 ## passed to opendir() and that this object is expected to explore. You can use
 ## parse_url()  to break it apart.
-public function dir_opendir ($path, $options)
- {$this->path = parse_url($path);
+##
+public function dir_opendir ($url, $options)
+ {$this->parsed_url = parse_url($url);
   switch ($type = $this->query_type())
          {case 'workgroup':
                $browser = $this->get_master_server($this->get_rname());
@@ -239,9 +241,10 @@ public function dir_opendir ($path, $options)
 ##                          any errors. If this flag is not set, you are
 ##                          responsible for reporting errors using the
 ##                          trigger_error() function during stating of the path.
-public function url_stat ($path, $flags)
- {list($this->url, $this->path, $this->flags) = array
-      ($path, parse_url($path), $flags);
+##
+public function url_stat ($url, $flags)
+ {list($this->url, $this->parsed_url, $this->flags) = array
+      ($url, parse_url($url), $flags);
   $info = $this->get_info($this->get_user(), $this->get_server(),
                           $this->get_rname(), $this->get_rpath());
   return array
@@ -258,16 +261,19 @@ public function url_stat ($path, $flags)
 
 ## This method is called in response to readdir()  and should return a string
 ## representing the next filename in the location opened by dir_opendir().
+##
 public function dir_readdir () {return @$this->dir[$this->dir_index++];}
 
 ## This method is called in response to rewinddir()  and should reset the output
 ## generated by dir_readdir(). i.e.: The next call to dir_readdir() should
 ## return the first entry in the location returned by dir_opendir().
+##
 public function dir_rewinddir () {$this->dir_index = 0;}
 
 ## This method is called in response to closedir(). You should release any
 ## resources which were locked or allocated during the opening and use of the
 ## directory stream.
+##
 public function dir_closedir () {return true;}
 
 
@@ -278,11 +284,11 @@ public function dir_closedir () {return true;}
 public function __destruct () {if ($this->tmpfile <> '') {unlink($this->tmpfile);}}
 
 ## read functions
-private function get_user () {return @$this->path['user'];}
-private function get_pass () {return @$this->path['pass'];}
-private function get_server () {return strtolower(@$this->path['host']);}
+private function get_user () {return @$this->parsed_url['user'];}
+private function get_pass () {return @$this->parsed_url['pass'];}
+private function get_server () {return strtolower(@$this->parsed_url['host']);}
 private function get_url () {return @$this->url;}
-private function get_path () {return $this->fix_path(@$this->path['path']);}
+private function get_path () {return $this->fix_path(@$this->parsed_url['path']);}
 
 private function get_rpath ()
  {return preg_replace('/^\/([^\/]+)/', '', $this->get_path());}
@@ -302,7 +308,9 @@ private function get_files ($path='')
   if (! isset(samba_stream::$__cache['smbclient'][$u][$h][$s][$p]))
      {$this->smbclient_do('cd "'.$p.'"; dir');}
   if (! isset(samba_stream::$__cache['smbclient'][$u][$h][$s][$p]))
-     {print $p; print_r(samba_stream::$__cache); trigger_error("path does not exist //$h/$s/$p");}
+     {print $p;
+      print_r(samba_stream::$__cache);
+      trigger_error("path does not exist //$h/$s/$p");}
   return array_keys(samba_stream::$__cache['smbclient'][$u][$h][$s][$p]);}
 
 private function get_servers ()
@@ -354,11 +362,8 @@ private function smbclient_do ($command)
   $cmd = 'smbclient '
        . escapeshellarg('//'.$this->get_server().'/'.$this->get_rname())
        . ' -b 1200 '
-       . ' -O '.escapeshellarg('TCP_NODELAY '
-               .'IPTOS_LOWDELAY '
-               .'SO_KEEPALIVE '
-               .'SO_RCVBUF=8192 '
-               .'SO_SNDBUF=8192')
+       . ' -O '.escapeshellarg('TCP_NODELAY IPTOS_LOWDELAY SO_KEEPALIVE '
+               .'SO_RCVBUF=8192 SO_SNDBUF=8192')
        . ' -c '.escapeshellarg($command);
   $this->parse_smbclient($cmd);}
 
@@ -403,7 +408,10 @@ private function parse_file ($regs)
    if ($name <> '.' && $name <> '..')
       {$type = (strpos($attr,'D') === FALSE) ? 'file' : 'folder';
    list($u, $h, $s, $p) = array
-       ($this->get_user(), $this->get_server(), $this->get_rname(), $this->get_rpath());
+       ($this->get_user(),
+        $this->get_server(),
+        $this->get_rname(),
+        $this->get_rpath());
    $this->set_info($u, $h, $s, $p, $name, array
     ('attr' => $attr,
      'size' => $regs[2],
@@ -461,7 +469,7 @@ private function parse_size ($regs)
        ($regs[1] * $regs[2], $regs[3] * $regs[2]);}
 
 private function get_linetype ($line)
- {list($line_type, $regs) = array(L_SKIP, array());
+ {list($line_type, $regs) = array('skip', array());
   reset(samba_stream::$__regexp);
   foreach (samba_stream::$__regexp as $regexp => $type)
           {if (preg_match('/'.$regexp.'/', $line, $regs))
@@ -477,16 +485,16 @@ private function parse_smbclient ($cmd)
          list($line_type, $regs) = $this->get_linetype($line);
          print "$line:$line_type\n";
          switch ($line_type)
-                {case L_SKIP:    continue;
-                 case L_SHARES:  $mode = 'shares';     break;
-                 case L_SERVERS: $mode = 'servers';    break;
-                 case L_WORKG:   $mode = 'workgroups'; break;
-                 case L_SHARE:   $this->parse_share($line); break;
-                 case L_SRVORWG: $this->parse_srvorwg($line, $mode); break;
-                 case L_FILES:   $this->parse_file($regs); break;
-                 case L_JOBS:    $this->parse_job($regs); break;
-                 case L_SIZE:    $this->parse_size($regs); break;
-		         case L_ERROR:   trigger_error('error '.$regs[1], E_USER_ERROR);}}
+                {case 'skip':    continue;
+                 case 'shares':  $mode = 'shares';     break;
+                 case 'servers': $mode = 'servers';    break;
+                 case 'workg':   $mode = 'workgroups'; break;
+                 case 'share':   $this->parse_share($line); break;
+                 case 'srvorwg': $this->parse_srvorwg($line, $mode); break;
+                 case 'files':   $this->parse_file($regs); break;
+                 case 'jobs':    $this->parse_job($regs); break;
+                 case 'size':    $this->parse_size($regs); break;
+                 case 'error':   trigger_error('error '.$regs[1], E_USER_ERROR);}}
   pclose($output);}
 
 
