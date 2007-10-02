@@ -21,7 +21,7 @@
 #  
 ###################################################################
 
-define ('SMB4PHP_VERSION',   '0.4');
+define ('SMB4PHP_VERSION',   '0.5');
 
 ###################################################################
 # CONFIGURATION SECTION - Change for your needs
@@ -33,40 +33,42 @@ define ('SMB4PHP_SMBCLIENT', 'smbclient');
 # SMB - commands that does not need an instance
 ###################################################################
 
-$GLOBALS['__smb_cache'] = array ();
+$GLOBALS['__smb_cache'] = array ('stat' => array (), 'dir' => array ());
 
 class smb {
 
     function parse_url ($url) {
         $pu = parse_url (trim($url));
-        if (count ($userdomain = split (';', urldecode (@$pu['user']))) > 1)
-          @list ($pu['domain'], $pu['user']) = $userdomain;
-        $path = preg_replace (array ('/^\//', '/\/$/'), '', urldecode (@$pu['path']));
+        foreach (array ('domain', 'user', 'pass', 'host', 'port', 'path') as $i)
+            if (! isset($pu[$i])) $pu[$i] = '';
+        if (count ($userdomain = split (';', urldecode ($pu['user']))) > 1)
+            @list ($pu['domain'], $pu['user']) = $userdomain;
+        $path = preg_replace (array ('/^\//', '/\/$/'), '', urldecode ($pu['path']));
         list ($pu['share'], $pu['path']) = (preg_match ('/^([^\/]+)\/(.*)/', $path, $regs))
           ? array ($regs[1], preg_replace ('/\//', '\\', $regs[2]))
           : array ($path, '');
-        $pu['type'] = $pu['path'] ? 'path' : ($pu['share'] ? 'share' : (@$pu['host'] ? 'host' : '**error**'));
+        $pu['type'] = $pu['path'] ? 'path' : ($pu['share'] ? 'share' : ($pu['host'] ? 'host' : '**error**'));
         if (! ($pu['port'] = intval(@$pu['port']))) $pu['port'] = 139;
         return $pu;
     }
 
 
-    function look ($host, $user='', $pass='', $domain='', $port = 139) {
-        $auth = ($user <> '' ? (' -U '.escapeshellarg ($user.'%'.$pass)) : '')
-              . ($domain <> '' ? (' -W '.escapeshellarg ($domain)) : '');
-        $port = ($port <> 139 ? ' -p '.escapeshellarg($port) : '');
-        return smb::client ('-N -L '    . escapeshellarg ($host) . $auth . $port);
+    function look ($purl) {
+        $auth = ($purl['user'] <> '' ? (' -U ' . escapeshellarg ($purl['user'].'%'.$purl['pass'])) : '')
+              . ($purl['domain'] <> '' ? (' -W ' . escapeshellarg ($purl['domain'])) : '');
+        $port = ($purl['port'] <> 139 ? ' -p ' . escapeshellarg ($purl['port']) : '');
+        return smb::client ('-N -L ' . escapeshellarg ($purl['host']) . $auth . $port);
     }
 
 
-    function execute ($command, $host, $share, $user='', $pass='', $domain='', $port = 139) {
-        $auth = ($user <> '' ? (' -U '.escapeshellarg ($user.'%'.$pass)) : '')
-              . ($domain <> '' ? (' -W '.escapeshellarg ($domain)) : '');
-        $port = ($port <> 139 ? ' -p '.escapeshellarg($port) : '');
+    function execute ($command, $purl) {
+        $auth = ($purl['user'] <> '' ? (' -U ' . escapeshellarg ($purl['user'] . '%' . $purl['pass'])) : '')
+              . ($purl['domain'] <> '' ? (' -W ' . escapeshellarg ($purl['domain'])) : '');
+        $port = ($purl['port'] <> 139 ? ' -p ' . escapeshellarg ($purl['port']) : '');
         return smb::client ('-N -d 0 '
-              . escapeshellarg ('//'.$host.'/'.$share)
+              . escapeshellarg ('//' . $purl['host'] . '/' . $purl['share'])
               . $auth . $port
-              . ' -c '.escapeshellarg ($command)
+              . ' -c ' . escapeshellarg ($command)
         );
     }
 
@@ -168,19 +170,17 @@ class smb {
     # stats
 
     function url_stat ($url, $flags = STREAM_URL_STAT_LINK) {
-        global $__smb_cache;
-
-        if (isset($__smb_cache[$url])) { return $__smb_cache[$url]; }
+        if ($s = smb::getstatcache($url)) { return $s; }
         list ($stat, $pu) = array (array (), smb::parse_url ($url));
         switch ($pu['type']) {
             case 'host':
-                if (smb::look ($pu['host'], @$pu['user'], @$pu['pass'], @$pu['domain'], $pu['port']))
+                if (smb::look ($pu))
                    $stat = stat ("/tmp");
                 else
                    trigger_error ("url_stat(): list failed for host '{$host}'", E_USER_WARNING);
                 break;
             case 'share':
-                if ($o = smb::look ($pu['host'], @$pu['user'], @$pu['pass'], @$pu['domain'], $pu['port'])) {
+                if ($o = smb::look ($pu)) {
                    $found = false;
                    $lshare = strtolower ($share);
                    foreach ($o['disk'] as $s) if ($lshare == strtolower($s)) {
@@ -193,7 +193,7 @@ class smb {
                 }
                 break;
             case 'path':
-                if ($o = smb::execute ('dir "'.$pu['path'].'"', $pu['host'], $pu['share'], @$pu['user'], @$pu['pass'], @$pu['domain'])) {
+                if ($o = smb::execute ('dir "'.$pu['path'].'"', $pu)) {
                     $p = split ("[\\]", $pu['path']);
                     $name = $p[count($p)-1];
                     if (isset ($o['info'][$name])) {
@@ -216,12 +216,17 @@ class smb {
         $s = ($is_file) ? stat ('/etc/passwd') : stat ('/tmp');
         $s[7] = $s['size'] = $info['size'];
         $s[8] = $s[9] = $s[10] = $s['atime'] = $s['mtime'] = $s['ctime'] = $info['time'];
-        return $__smb_cache[$url] = $s;
+        return $__smb_cache['stat'][$url] = $s;
+    }
+
+    function getstatcache ($url) {
+        global $__smb_cache;
+        return isset ($__smb_cache['stat'][$url]) ? $__smb_cache['stat'][$url] : FALSE;
     }
 
     function clearstatcache ($url='') {
         global $__smb_cache;
-        if ($url == '') $__smb_cache = array (); else unset ($__smb_cache[$url]);
+        if ($url == '') $__smb_cache['stat'] = array (); else unset ($__smb_cache['stat'][$url]);
     }
 
 
@@ -231,36 +236,36 @@ class smb {
         $pu = smb::parse_url($url);
         if ($pu['type'] <> 'path') trigger_error('unlink(): error in URL', E_USER_ERROR);
         smb::clearstatcache ($url);
-        return smb::execute ('del "'.$pu['path'].'"', $pu['host'], $pu['share'], @$pu['user'], @$pu['pass'], @$pu['domain'], $pu['port']);
+        return smb::execute ('del "'.$pu['path'].'"', $pu);
     }
 
     function rename ($url_from, $url_to) {
         list ($from, $to) = array (smb::parse_url($url_from), smb::parse_url($url_to));
         if ($from['host'] <> $to['host'] ||
             $from['share'] <> $to['share'] ||
-            @$from['user'] <> @$to['user'] ||
-            @$from['pass'] <> @$to['pass'] ||
-            @$from['domain'] <> @$to['domain']) {
+            $from['user'] <> $to['user'] ||
+            $from['pass'] <> $to['pass'] ||
+            $from['domain'] <> $to['domain']) {
             trigger_error('rename(): FROM & TO must be in same server-share-user-pass-domain', E_USER_ERROR);
         }
         if ($from['type'] <> 'path' || $to['type'] <> 'path') {
             trigger_error('rename(): error in URL', E_USER_ERROR);
         }
         smb::clearstatcache ($url_from);
-        return smb::execute ('rename "'.$from['path'].'" "'.$to['path'].'"', $to['host'], $to['share'], @$to['user'], @$to['pass'], @$to['domain'], $to['port']);
+        return smb::execute ('rename "'.$from['path'].'" "'.$to['path'].'"', $to);
     }
 
     function mkdir ($url, $mode, $options) {
         $pu = smb::parse_url($url);
         if ($pu['type'] <> 'path') trigger_error('mkdir(): error in URL', E_USER_ERROR);
-        return smb::execute ('mkdir "'.$pu['path'].'"', $pu['host'], $pu['share'], @$pu['user'], @$pu['pass'], @$pu['domain'], $pu['port']);
+        return smb::execute ('mkdir "'.$pu['path'].'"', $pu);
     }
 
     function rmdir ($url) {
         $pu = smb::parse_url($url);
         if ($pu['type'] <> 'path') trigger_error('rmdir(): error in URL', E_USER_ERROR);
         smb::clearstatcache ($url);
-        return smb::execute ('rmdir "'.$pu['path'].'"', $pu['host'], $pu['share'], @$pu['user'], @$pu['pass'], @$pu['domain'], $pu['port']);
+        return smb::execute ('rmdir "'.$pu['path'].'"', $pu);
     }
 
 }
@@ -281,10 +286,15 @@ class smb_stream_wrapper extends smb {
     # directories
 
     function dir_opendir ($url, $options) {
+        if ($d = $this->getdircache ($url)) {
+            $this->dir = $d;
+            $this->dir_index = 0;
+            return true;
+        }
         $pu = smb::parse_url ($url);
         switch ($pu['type']) {
             case 'host':
-                if ($o = smb::look ($pu['host'], $pu['user'], $pu['pass'], $pu['domain'], $pu['port'])) {
+                if ($o = smb::look ($pu)) {
                    $this->dir = $o['disk'];
                    $this->dir_index = 0;
                 } else {
@@ -293,11 +303,12 @@ class smb_stream_wrapper extends smb {
                 break;
             case 'share':
             case 'path':
-                if ($o = smb::execute ('dir "'.$pu['path'].'\*"', $pu['host'], $pu['share'], $pu['user'], $pu['pass'], @$pu['domain'], $pu['port'])) {
+                if ($o = smb::execute ('dir "'.$pu['path'].'\*"', $pu)) {
                    $this->dir = array_keys($o['info']);
                    $this->dir_index = 0;
+                   $this->adddircache ($url, $this->dir);
                    foreach ($o['info'] as $name => $info) {
-                       smb::addstatcache($url.'/'.urlencode($name), $info);
+                       smb::addstatcache($url . '/' . urlencode($name), $info);
                    }
                 } else {
                    trigger_error ("dir_opendir(): dir failed for path '{$path}'", E_USER_WARNING);
@@ -316,6 +327,24 @@ class smb_stream_wrapper extends smb {
     function dir_closedir () { $this->dir = array(); $this->dir_index = -1; return TRUE; }
 
 
+    # cache
+
+    function adddircache ($url, $content) {
+        global $__smb_cache;
+        return $__smb_cache['dir'][$url] = $content;
+    }
+
+    function getdircache ($url) {
+        global $__smb_cache;
+        return isset ($__smb_cache['dir'][$url]) ? $__smb_cache['dir'][$url] : FALSE;
+    }
+
+    function cleardircache ($url='') {
+        global $__smb_cache;
+        if ($url == '') $__smb_cache['dir'] = array (); else unset ($__smb_cache['dir'][$url]);
+    }
+
+
     # streams
 
     function stream_open ($url, $mode, $options, $opened_path) {
@@ -325,7 +354,7 @@ class smb_stream_wrapper extends smb {
         switch ($mode) {
             case 'r':
                 $this->tmpfile = tempnam('/tmp', 'smb.down.');
-                    smb::execute ('get "'.$pu['path'].'" "'.$this->tmpfile.'"', $pu['host'], $pu['share'], $pu['user'], $pu['pass'], @$pu['domain'], $pu['port']);
+                smb::execute ('get "'.$pu['path'].'" "'.$this->tmpfile.'"', $pu);
                 $this->stream = fopen ($this->tmpfile, 'r');
                 $this->mode = 'r';
                 break;
@@ -352,14 +381,7 @@ class smb_stream_wrapper extends smb {
     function stream_flush () {
         if ($this->mode == 'w' && $this->need_flush) {
             smb::clearstatcache ($this->url);
-            smb::execute ('put "'.$this->tmpfile.'" "'.$this->parsed_url['path'].'"',
-                $this->parsed_url['host'],
-                $this->parsed_url['share'],
-                @$this->parsed_url['user'],
-                @$this->parsed_url['pass'],
-                @$this->parsed_url['domain'],
-                $this->parsed_url['port']
-            );
+            smb::execute ('put "'.$this->tmpfile.'" "'.$this->parsed_url['path'].'"', $this->parsed_url);
             $this->need_flush = false;
         }
     }
