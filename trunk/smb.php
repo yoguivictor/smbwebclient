@@ -359,6 +359,7 @@ class smb_stream_wrapper extends smb {
                 $this->mode = 'r';
                 break;
             case 'w':
+                $this->cleardircache();
                 $this->tmpfile = tempnam('/tmp', 'smb.up.');
                 $this->stream = fopen($this->tmpfile, 'w');
                 $this->mode = 'w';
