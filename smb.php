@@ -3,7 +3,7 @@
 # smb.php
 # This class implements a SMB stream wrapper based on 'smbclient'
 #
-# Date: vie sep 28 10:43:02 CEST 2007
+# Date: lun oct  8 10:24:01 CEST 2007
 #
 # Homepage: http://www.phpclasses.org/smb4php
 #
@@ -21,7 +21,7 @@
 #  
 ###################################################################
 
-define ('SMB4PHP_VERSION',   '0.5');
+define ('SMB4PHP_VERSION', '0.6');
 
 ###################################################################
 # CONFIGURATION SECTION - Change for your needs
@@ -54,25 +54,18 @@ class smb {
 
 
     function look ($purl) {
-        $auth = ($purl['user'] <> '' ? (' -U ' . escapeshellarg ($purl['user'].'%'.$purl['pass'])) : '')
-              . ($purl['domain'] <> '' ? (' -W ' . escapeshellarg ($purl['domain'])) : '');
-        $port = ($purl['port'] <> 139 ? ' -p ' . escapeshellarg ($purl['port']) : '');
-        return smb::client ('-N -L ' . escapeshellarg ($purl['host']) . $auth . $port);
+        return smb::client ('-L ' . escapeshellarg ($purl['host']), $purl);
     }
 
 
     function execute ($command, $purl) {
-        $auth = ($purl['user'] <> '' ? (' -U ' . escapeshellarg ($purl['user'] . '%' . $purl['pass'])) : '')
-              . ($purl['domain'] <> '' ? (' -W ' . escapeshellarg ($purl['domain'])) : '');
-        $port = ($purl['port'] <> 139 ? ' -p ' . escapeshellarg ($purl['port']) : '');
-        return smb::client ('-N -d 0 '
+        return smb::client ('-d 0 '
               . escapeshellarg ('//' . $purl['host'] . '/' . $purl['share'])
-              . $auth . $port
-              . ' -c ' . escapeshellarg ($command)
+              . ' -c ' . escapeshellarg ($command), $purl
         );
     }
 
-    function client ($params) {
+    function client ($params, $purl) {
 
         static $regexp = array (
         '^added interface ip=(.*) bcast=(.*) nmask=(.*)$' => 'skip',
@@ -106,7 +99,10 @@ class smb {
         '^message start: ERRSRV - (ERRmsgoff)' => 'error'
         );
 
-        $output = popen (SMB4PHP_SMBCLIENT.' '.$params.' 2>/dev/null', 'r');
+        $auth = ($purl['user'] <> '' ? (' -U ' . escapeshellarg ($purl['user'] . '%' . $purl['pass'])) : '')
+              . ($purl['domain'] <> '' ? (' -W ' . escapeshellarg ($purl['domain'])) : '');
+        $port = ($purl['port'] <> 139 ? ' -p ' . escapeshellarg ($purl['port']) : '');
+        $output = popen (SMB4PHP_SMBCLIENT." -N {$auth} {$port} {$params} 2>/dev/null", 'r');
         $info = array ();
         while ($line = fgets ($output, 4096)) {
             list ($tag, $regs, $i) = array ('skip', array (), array ());
@@ -174,17 +170,17 @@ class smb {
         list ($stat, $pu) = array (array (), smb::parse_url ($url));
         switch ($pu['type']) {
             case 'host':
-                if (smb::look ($pu))
+                if ($o = smb::look ($pu))
                    $stat = stat ("/tmp");
                 else
                    trigger_error ("url_stat(): list failed for host '{$host}'", E_USER_WARNING);
                 break;
             case 'share':
                 if ($o = smb::look ($pu)) {
-                   $found = false;
+                   $found = FALSE;
                    $lshare = strtolower ($share);
                    foreach ($o['disk'] as $s) if ($lshare == strtolower($s)) {
-                       $found = true;
+                       $found = TRUE;
                        $stat = stat ("/tmp");
                        break;
                    }
@@ -279,7 +275,7 @@ class smb_stream_wrapper extends smb {
     # variables
 
     var $stream, $url, $parsed_url = array (), $mode, $tmpfile;
-    var $need_flush = false;
+    var $need_flush = FALSE;
     var $dir = array (), $dir_index = -1;
 
 
@@ -289,7 +285,7 @@ class smb_stream_wrapper extends smb {
         if ($d = $this->getdircache ($url)) {
             $this->dir = $d;
             $this->dir_index = 0;
-            return true;
+            return TRUE;
         }
         $pu = smb::parse_url ($url);
         switch ($pu['type']) {
@@ -317,7 +313,7 @@ class smb_stream_wrapper extends smb {
             default:
                 trigger_error ('dir_opendir(): error in URL', E_USER_ERROR);
         }
-        return true;
+        return TRUE;
     }
 
     function dir_readdir () { return ($this->dir_index < count($this->dir)) ? $this->dir[$this->dir_index++] : FALSE; }
@@ -349,21 +345,25 @@ class smb_stream_wrapper extends smb {
 
     function stream_open ($url, $mode, $options, $opened_path) {
         $this->url = $url;
+        $this->mode = $mode;
         $this->parsed_url = $pu = smb::parse_url($url);
         if ($pu['type'] <> 'path') trigger_error('stream_open(): error in URL', E_USER_ERROR);
         switch ($mode) {
             case 'r':
-                $this->tmpfile = tempnam('/tmp', 'smb.down.');
-                smb::execute ('get "'.$pu['path'].'" "'.$this->tmpfile.'"', $pu);
-                $this->stream = fopen ($this->tmpfile, 'r');
-                $this->mode = 'r';
-                break;
+            case 'r+':
+            case 'rb':
+            case 'a':
+            case 'a+':  $this->tmpfile = tempnam('/tmp', 'smb.down.');
+                        smb::execute ('get "'.$pu['path'].'" "'.$this->tmpfile.'"', $pu);
+                        break;
             case 'w':
-                $this->cleardircache();
-                $this->tmpfile = tempnam('/tmp', 'smb.up.');
-                $this->stream = fopen($this->tmpfile, 'w');
-                $this->mode = 'w';
+            case 'w+':
+            case 'wb':
+            case 'x':
+            case 'x+':  $this->cleardircache();
+                        $this->tmpfile = tempnam('/tmp', 'smb.up.');
         }
+        $this->stream = fopen ($this->tmpfile, $mode);
         return TRUE;
     }
 
@@ -371,7 +371,7 @@ class smb_stream_wrapper extends smb {
 
     function stream_read ($count) { return fread($this->stream, $count); }
 
-    function stream_write ($data) { $this->need_flush = true; return fwrite($this->stream, $data); }
+    function stream_write ($data) { $this->need_flush = TRUE; return fwrite($this->stream, $data); }
 
     function stream_eof () { return feof($this->stream); }
 
@@ -380,16 +380,22 @@ class smb_stream_wrapper extends smb {
     function stream_seek ($offset, $whence=null) { return fseek($this->stream, $offset, $whence); }
 
     function stream_flush () {
-        if ($this->mode == 'w' && $this->need_flush) {
+        if ($this->mode <> 'r' && $this->need_flush) {
             smb::clearstatcache ($this->url);
             smb::execute ('put "'.$this->tmpfile.'" "'.$this->parsed_url['path'].'"', $this->parsed_url);
-            $this->need_flush = false;
+            $this->need_flush = FALSE;
         }
     }
 
     function stream_stat () { return smb::url_stat ($this->url); }
 
-    function __destruct () { if ($this->tmpfile <> '') unlink($this->tmpfile); }
+    function __destruct () {
+        if ($this->tmpfile <> '') {
+            if ($this->need_flush) $this->stream_flush ();
+            unlink ($this->tmpfile);
+
+        }
+    }
 
 }
 
