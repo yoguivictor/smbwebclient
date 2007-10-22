@@ -3,7 +3,7 @@
 # smb.php
 # This class implements a SMB stream wrapper based on 'smbclient'
 #
-# Date: lun oct  8 10:24:01 CEST 2007
+# Date: lun oct 22 10:35:35 CEST 2007
 #
 # Homepage: http://www.phpclasses.org/smb4php
 #
@@ -21,13 +21,15 @@
 #  
 ###################################################################
 
-define ('SMB4PHP_VERSION', '0.6');
+define ('SMB4PHP_VERSION', '0.7');
 
 ###################################################################
 # CONFIGURATION SECTION - Change for your needs
 ###################################################################
 
 define ('SMB4PHP_SMBCLIENT', 'smbclient');
+define ('SMB4PHP_SMBOPTIONS', 'TCP_NODELAY IPTOS_LOWDELAY SO_KEEPALIVE SO_RCVBUF=8192 SO_SNDBUF=8192');
+define ('SMB4PHP_AUTHMODE', 'arg'); # set to 'env' to use USER enviroment variable
 
 ###################################################################
 # SMB - commands that does not need an instance
@@ -99,10 +101,18 @@ class smb {
         '^message start: ERRSRV - (ERRmsgoff)' => 'error'
         );
 
-        $auth = ($purl['user'] <> '' ? (' -U ' . escapeshellarg ($purl['user'] . '%' . $purl['pass'])) : '')
-              . ($purl['domain'] <> '' ? (' -W ' . escapeshellarg ($purl['domain'])) : '');
+        if (SMB4PHP_AUTHMODE == 'env') {
+            putenv("USER={$purl['user']}%{$purl['pass']}");
+            $auth = '';
+        } else {
+            $auth = ($purl['user'] <> '' ? (' -U ' . escapeshellarg ($purl['user'] . '%' . $purl['pass'])) : '');
+        }
+        if ($purl['domain'] <> '') {
+            $auth .= ' -W ' . escapeshellarg ($purl['domain']);
+        }
         $port = ($purl['port'] <> 139 ? ' -p ' . escapeshellarg ($purl['port']) : '');
-        $output = popen (SMB4PHP_SMBCLIENT." -N {$auth} {$port} {$params} 2>/dev/null", 'r');
+        $options = '-O ' . escapeshellarg(SMB4PHP_SMBOPTIONS);
+        $output = popen (SMB4PHP_SMBCLIENT." -N {$auth} {$options} {$port} {$options} {$params} 2>/dev/null", 'r');
         $info = array ();
         while ($line = fgets ($output, 4096)) {
             list ($tag, $regs, $i) = array ('skip', array (), array ());
