@@ -21,7 +21,7 @@
 #  
 ###################################################################
 
-define ('SMB4PHP_VERSION', '0.7');
+define ('SMB4PHP_VERSION', '0.8');
 
 ###################################################################
 # CONFIGURATION SECTION - Change for your needs
@@ -188,7 +188,7 @@ class smb {
             case 'share':
                 if ($o = smb::look ($pu)) {
                    $found = FALSE;
-                   $lshare = strtolower ($share);
+                   $lshare = strtolower ($pu['share']);  # fix by Eric Leung
                    foreach ($o['disk'] as $s) if ($lshare == strtolower($s)) {
                        $found = TRUE;
                        $stat = stat ("/tmp");
