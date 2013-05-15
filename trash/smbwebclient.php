@@ -1,6 +1,6 @@
 <?php
 ##
-## $Id$
+## $Id: smbwebclient.php 20 2013-05-15 11:11:14Z vmvarela@gmail.com $
 ##
 ## by Victor M. Varela <vmvarela@gmail.com>
 ##
