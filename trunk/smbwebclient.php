@@ -3,6 +3,443 @@
 # smbwebclient.php
 # This script is a web interface to a Windows Network.
 #
+# Date: wed may 15 09:17:00 CEST 2013
+#
+# Homepage: http://www.phpclasses.org/smbwebclient
+#
+# Copyright (c) 2003-2013 Victor M. Varela <vmvarela@gmail.com>
+#
+# This program is free software; you can redistribute it and/or
+# modify it under the terms of the GNU General Public License
+# as published by the Free Software Foundation; either version 2
+# of the License, or (at your option) any later version.
+#  
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#  
+###################################################################
+
+###################################################################
+# CONFIGURATION SECTION - Change for your needs
+###################################################################
+
+define ('SMBCLIENT_PATH', 'smbclient');
+define ('SMBCLIENT_OPTIONS', 'TCP_NODELAY IPTOS_LOWDELAY SO_KEEPALIVE SO_RCVBUF=8192 SO_SNDBUF=8192');
+define ('SMBCLIENT_AUTHMODE', 'arg'); # 'env' to use USER enviroment variable
+define ('SMBCLIENT_PORT', 139);
+
+
+###################################################################
+# SMBCLIENT_STREAM_WRAPPER - access to smbclient:// URIs
+###################################################################
+
+class smbclient_stream_wrapper {
+
+static $__cache = array ('stat' => array (), 'dir' => array ());
+
+static $re = array (
+        '^added interface ip=(.*) bcast=(.*) nmask=(.*)$' => 'skip',
+        'Anonymous login successful' => 'skip',
+        '^Domain=\[(.*)\] OS=\[(.*)\] Server=\[(.*)\]$' => 'skip',
+        '^\tSharename[ ]+Type[ ]+Comment$' => 'shares',
+        '^\t---------[ ]+----[ ]+-------$' => 'skip',
+        '^\tServer   [ ]+Comment$' => 'servers',
+        '^\t---------[ ]+-------$' => 'skip',
+        '^\tWorkgroup[ ]+Master$' => 'workg',
+        '^\t(.*)[ ]+(Disk|IPC)[ ]+IPC.*$' => 'skip',
+        '^\tIPC\\\$(.*)[ ]+IPC' => 'skip',
+        '^\t(.*)[ ]+(Disk)[ ]+(.*)$' => 'share',
+        '^\t(.*)[ ]+(Printer)[ ]+(.*)$' => 'skip',
+        '([0-9]+) blocks of size ([0-9]+)\. ([0-9]+) blocks available' => 'skip',
+        'Got a positive name query response from ' => 'skip',
+        '^(session setup failed): (.*)$' => 'error',
+        '^(.*): ERRSRV - ERRbadpw' => 'error',
+        '^Error returning browse list: (.*)$' => 'error',
+        '^tree connect failed: (.*)$' => 'error',
+        '^(Connection to .* failed)$' => 'error',
+        '^NT_STATUS_(.*) ' => 'error',
+        '^NT_STATUS_(.*)\$' => 'error',
+        'ERRDOS - ERRbadpath \((.*).\)' => 'error',
+        'cd (.*): (.*)$' => 'error',
+        '^cd (.*): NT_STATUS_(.*)' => 'error',
+        '^\t(.*)$' => 'srvorwg',
+        '^([0-9]+)[ ]+([0-9]+)[ ]+(.*)$' => 'skip',
+        '^Job ([0-9]+) cancelled' => 'skip',
+        '^[ ]+(.*)[ ]+([0-9]+)[ ]+(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[ ](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ ]+([0-9]+)[ ]+([0-9]{2}:[0-9]{2}:[0-9]{2})[ ]([0-9]{4})$' => 'files',
+        '^message start: ERRSRV - (ERRmsgoff)' => 'error'
+);
+
+
+
+# variables
+/*
+var $stream;
+var $url;
+var $parsedURL = array ();
+var $mode;
+var $tmpfile;
+var $needFlush = FALSE;
+var $dir = array ();
+var $dirIndex = -1;
+*/
+
+
+
+# get info needed by smbclient from URL
+# format - smbclient://domain\user@host/share/path
+function ParseURL ($url)
+{
+	$pu = parse_url (trim($url));
+	foreach (array ('user', 'pass', 'host', 'port', 'share', 'path') as $i) {
+		# init missing fields always present
+		if (! isset($pu[$i])) $pu[$i] = '';
+	}
+
+	$path = preg_replace (array ('/^\//', '/\/$/'), '', urldecode ($pu['path']));
+	list ($pu['share'], $pu['path']) = (preg_match ('/^([^\/]+)\/(.*)/', $path, $regs))
+		? array ($regs[1], preg_replace ('/\//', '\\', $regs[2]))
+		: array ($path, '');
+
+	if (! ($pu['port'] = intval(@$pu['port']))) $pu['port'] = SMBCLIENT_PORT;
+
+	($pu['share'] <> '') OR die("error: a share must be specified !\n");
+
+	return $pu;
+}
+
+function Client ($params, $purl)
+{
+        if (SMBCLIENT_AUTHMODE == 'env') {
+            putenv("USER={$purl['user']}%{$purl['pass']}");
+            $auth = '';
+        } else {
+            $auth = ($purl['user'] <> '' ? (' -U ' . escapeshellarg ($purl['user'] . '%' . $purl['pass'])) : '');
+        }
+        if ($purl['domain'] <> '') {
+            $auth .= ' -W ' . escapeshellarg ($purl['domain']);
+        }
+        $port = ($purl['port'] <> 139 ? ' -p ' . escapeshellarg ($purl['port']) : '');
+        $options = '-O ' . escapeshellarg(SMB4PHP_SMBOPTIONS);
+        $output = popen (SMBCLIENT_PATH." -N {$auth} {$options} {$port} {$options} {$params} 2>/dev/null", 'r');
+        $info = array ();
+        while ($line = fgets ($output, 4096)) {
+            list ($tag, $regs, $i) = array ('skip', array (), array ());
+            reset (smbclient_stream_wrapper::$re);
+            foreach (smbclient_stream_wrapper::$re as $r => $t) if (preg_match ('/'.$r.'/', $line, $regs)) {
+                $tag = $t;
+                break;
+            }
+            switch ($tag) {
+                case 'skip':    continue;
+                case 'shares':  $mode = 'shares';     break;
+                case 'servers': $mode = 'servers';    break;
+                case 'workg':   $mode = 'workgroups'; break;
+                case 'share':
+                    list($name, $type) = array (
+                        trim(substr($line, 1, 15)),
+                        trim(strtolower(substr($line, 17, 10)))
+                    );
+                    $i = ($type <> 'disk' && preg_match('/^(.*) Disk/', $line, $regs))
+                        ? array(trim($regs[1]), 'disk')
+                        : array($name, 'disk');
+                    break;
+                case 'srvorwg':
+                    list ($name, $master) = array (
+                        strtolower(trim(substr($line,1,21))),
+                        strtolower(trim(substr($line, 22)))
+                    );
+                    $i = ($mode == 'servers') ? array ($name, "server") : array ($name, "workgroup", $master);
+                    break;
+                case 'files':
+                    list ($attr, $name) = preg_match ("/^(.*)[ ]+([D|A|H|S|R]+)$/", trim ($regs[1]), $regs2)
+                        ? array (trim ($regs2[2]), trim ($regs2[1]))
+                        : array ('', trim ($regs[1]));
+                    list ($his, $im) = array (
+                    split(':', $regs[6]), 1 + strpos("JanFebMarAprMayJunJulAugSepOctNovDec", $regs[4]) / 3);
+                    $i = ($name <> '.' && $name <> '..')
+                        ? array (
+                            $name,
+                            (strpos($attr,'D') === FALSE) ? 'file' : 'folder',
+                            'attr' => $attr,
+                            'size' => intval($regs[2]),
+                            'time' => mktime ($his[0], $his[1], $his[2], $im, $regs[5], $regs[7])
+                          )
+                        : array();
+                    break;
+                case 'error':   trigger_error($regs[1], E_USER_ERROR);
+            }
+            if ($i) switch ($i[1]) {
+                case 'file':
+                case 'folder':    $info['info'][$i[0]] = $i;
+                case 'disk':
+                case 'server':
+                case 'workgroup': $info[$i[1]][] = $i[0];
+            }
+        }
+        pclose($output);
+        return $info;
+}
+
+
+
+/*
+
+    function look ($purl) {
+        return smbclient_stream_wrapper::client ('-L ' . escapeshellarg ($purl['host']), $purl);
+    }
+
+
+    function execute ($command, $purl) {
+        return smbclient_stream_wrapper::client ('-d 0 '
+              . escapeshellarg ('//' . $purl['host'] . '/' . $purl['share'])
+              . ' -c ' . escapeshellarg ($command), $purl
+        );
+    }
+
+
+
+    # stats
+
+    function url_stat ($url, $flags = STREAM_URL_STAT_LINK) {
+        if ($s = smbclient_stream_wrapper::getstatcache($url)) { return $s; }
+        list ($stat, $pu) = array (array (), smbclient_stream_wrapper::ParseURL ($url));
+        switch ($pu['type']) {
+            case 'host':
+                if ($o = smbclient_stream_wrapper::look ($pu))
+                   $stat = stat ("/tmp");
+                else
+                   trigger_error ("url_stat(): list failed for host '{$host}'", E_USER_WARNING);
+                break;
+            case 'share':
+                if ($o = smbclient_stream_wrapper::Look ($pu)) {
+                   $found = FALSE;
+                   $lshare = strtolower ($pu['share']);  # fix by Eric Leung
+                   foreach ($o['disk'] as $s) if ($lshare == strtolower($s)) {
+                       $found = TRUE;
+                       $stat = stat ("/tmp");
+                       break;
+                   }
+                   if (! $found)
+                      trigger_error ("url_stat(): disk resource '{$share}' not found in '{$host}'", E_USER_WARNING);
+                }
+                break;
+            case 'path':
+                if ($o = smbclient_stream_wrapper::execute ('dir "'.$pu['path'].'"', $pu)) {
+                    $p = split ("[\\]", $pu['path']);
+                    $name = $p[count($p)-1];
+                    if (isset ($o['info'][$name])) {
+                       $stat = smbclient_stream_wrapper::addstatcache ($url, $o['info'][$name]);
+                    } else {
+                       trigger_error ("url_stat(): path '{$pu['path']}' not found", E_USER_WARNING);
+                    }
+                } else {
+                    trigger_error ("url_stat(): dir failed for path '{$pu['path']}'", E_USER_WARNING);
+                }
+                break;
+            default: trigger_error ('error in URL', E_USER_ERROR);
+        }
+        return $stat;
+    }
+
+    function addstatcache ($url, $info) {
+        global $__smb_cache;
+        $is_file = (strpos ($info['attr'],'D') === FALSE);
+        $s = ($is_file) ? stat ('/etc/passwd') : stat ('/tmp');
+        $s[7] = $s['size'] = $info['size'];
+        $s[8] = $s[9] = $s[10] = $s['atime'] = $s['mtime'] = $s['ctime'] = $info['time'];
+        return $__smb_cache['stat'][$url] = $s;
+    }
+
+    function getstatcache ($url) {
+        global $__smb_cache;
+        return isset ($__smb_cache['stat'][$url]) ? $__smb_cache['stat'][$url] : FALSE;
+    }
+
+    function clearstatcache ($url='') {
+        global $__smb_cache;
+        if ($url == '') $__smb_cache['stat'] = array (); else unset ($__smb_cache['stat'][$url]);
+    }
+
+
+    # commands
+
+    function unlink ($url) {
+        $pu = smbclient_stream_wrapper::ParseURL($url);
+        if ($pu['type'] <> 'path') trigger_error('unlink(): error in URL', E_USER_ERROR);
+        smbclient_stream_wrapper::clearstatcache ($url);
+        return smbclient_stream_wrapper::execute ('del "'.$pu['path'].'"', $pu);
+    }
+
+    function rename ($url_from, $url_to) {
+        list ($from, $to) = array (smbclient_stream_wrapper::ParseURL($url_from), smbclient_stream_wrapper::ParseURL($url_to));
+        if ($from['host'] <> $to['host'] ||
+            $from['share'] <> $to['share'] ||
+            $from['user'] <> $to['user'] ||
+            $from['pass'] <> $to['pass'] ||
+            $from['domain'] <> $to['domain']) {
+            trigger_error('rename(): FROM & TO must be in same server-share-user-pass-domain', E_USER_ERROR);
+        }
+        if ($from['type'] <> 'path' || $to['type'] <> 'path') {
+            trigger_error('rename(): error in URL', E_USER_ERROR);
+        }
+        smbclient_stream_wrapper::clearstatcache ($url_from);
+        return smbclient_stream_wrapper::execute ('rename "'.$from['path'].'" "'.$to['path'].'"', $to);
+    }
+
+    function mkdir ($url, $mode, $options) {
+        $pu = smbclient_stream_wrapper::ParseURL($url);
+        if ($pu['type'] <> 'path') trigger_error('mkdir(): error in URL', E_USER_ERROR);
+        return smbclient_stream_wrapper::execute ('mkdir "'.$pu['path'].'"', $pu);
+    }
+
+    function rmdir ($url) {
+        $pu = smbclient_stream_wrapper::ParseURL($url);
+        if ($pu['type'] <> 'path') trigger_error('rmdir(): error in URL', E_USER_ERROR);
+        smbclient_stream_wrapper::clearstatcache ($url);
+        return smbclient_stream_wrapper::execute ('rmdir "'.$pu['path'].'"', $pu);
+    }
+
+
+
+    # directories
+
+    function dir_opendir ($url, $options) {
+        if ($d = $this->getdircache ($url)) {
+            $this->dir = $d;
+            $this->dir_index = 0;
+            return TRUE;
+        }
+        $pu = smbclient_stream_wrapper::ParseURL($url);
+        switch ($pu['type']) {
+            case 'host':
+                if ($o = smbclient_stream_wrapper::Look ($pu)) {
+                   $this->dir = $o['disk'];
+                   $this->dir_index = 0;
+                } else {
+                   trigger_error ("dir_opendir(): list failed for host '{$pu['host']}'", E_USER_WARNING);
+                }
+                break;
+            case 'share':
+            case 'path':
+                if ($o = smbclient_stream_wrapper::Execute ('dir "'.$pu['path'].'\*"', $pu)) {
+                   $this->dir = array_keys($o['info']);
+                   $this->dir_index = 0;
+                   $this->adddircache ($url, $this->dir);
+                   foreach ($o['info'] as $name => $info) {
+                       smbclient_stream_wrapper::AddStatCache($url . '/' . urlencode($name), $info);
+                   }
+                } else {
+                   trigger_error ("dir_opendir(): dir failed for path '{$path}'", E_USER_WARNING);
+                }
+                break;
+            default:
+                trigger_error ('dir_opendir(): error in URL', E_USER_ERROR);
+        }
+        return TRUE;
+    }
+
+    function dir_readdir () { return ($this->dir_index < count($this->dir)) ? $this->dir[$this->dir_index++] : FALSE; }
+
+    function dir_rewinddir () { $this->dir_index = 0; }
+
+    function dir_closedir () { $this->dir = array(); $this->dir_index = -1; return TRUE; }
+
+
+    # cache
+
+    function adddircache ($url, $content) {
+        global $__smb_cache;
+        return $__smb_cache['dir'][$url] = $content;
+    }
+
+    function getdircache ($url) {
+        global $__smb_cache;
+        return isset ($__smb_cache['dir'][$url]) ? $__smb_cache['dir'][$url] : FALSE;
+    }
+
+    function cleardircache ($url='') {
+        global $__smb_cache;
+        if ($url == '') $__smb_cache['dir'] = array (); else unset ($__smb_cache['dir'][$url]);
+    }
+
+
+    # streams
+
+    function stream_open ($url, $mode, $options, $opened_path) {
+        $this->url = $url;
+        $this->mode = $mode;
+        $this->parsedURL = $pu = smbclient_stream_wrapper::ParseURL($url);
+        if ($pu['type'] <> 'path') trigger_error('stream_open(): error in URL', E_USER_ERROR);
+        switch ($mode) {
+            case 'r':
+            case 'r+':
+            case 'rb':
+            case 'a':
+            case 'a+':  $this->tmpfile = tempnam('/tmp', 'smb.down.');
+                        smbclient_stream_wrapper::Execute ('get "'.$pu['path'].'" "'.$this->tmpfile.'"', $pu);
+                        break;
+            case 'w':
+            case 'w+':
+            case 'wb':
+            case 'x':
+            case 'x+':  $this->cleardircache();
+                        $this->tmpfile = tempnam('/tmp', 'smb.up.');
+        }
+        $this->stream = fopen ($this->tmpfile, $mode);
+        return TRUE;
+    }
+
+    function stream_close () { return fclose($this->stream); }
+
+    function stream_read ($count) { return fread($this->stream, $count); }
+
+    function stream_write ($data) { $this->need_flush = TRUE; return fwrite($this->stream, $data); }
+
+    function stream_eof () { return feof($this->stream); }
+
+    function stream_tell () { return ftell($this->stream); }
+
+    function stream_seek ($offset, $whence=null) { return fseek($this->stream, $offset, $whence); }
+
+    function stream_flush () {
+        if ($this->mode <> 'r' && $this->need_flush) {
+            smbclient_stream_wrapper::ClearStatCache ($this->url);
+            smbclient_stream_wrapper::Execute ('put "'.$this->tmpfile.'" "'.$this->parsedURL['path'].'"', $this->parsedURL);
+            $this->needFlush = FALSE;
+        }
+    }
+
+    function stream_stat () { return smbclient_stream_wrapper::url_stat ($this->url); }
+
+    function __destruct () {
+        if ($this->tmpfile <> '') {
+            if ($this->needFlush) $this->stream_flush ();
+            unlink ($this->tmpfile);
+
+        }
+    }
+
+
+*/
+
+}
+
+
+###################################################################
+# Register 'smbclient' protocol !
+###################################################################
+
+stream_wrapper_register('smbclient', 'smbclient_stream_wrapper')
+    or die ('Failed to register protocol');
+
+
+
+###################################################################
+# smbwebclient.php
+# This script is a web interface to a Windows Network.
+#
 # Installation:
 #   1. You will need smbclient (from SAMBA package) and PHP 4.1+. 
 #   2. Change your settings (editing this file)  --  see below
@@ -413,7 +850,7 @@ function smbwebclient ()
 		$this->mimeTypes[$a[0]] = $a[1];
 	}
 }
-
+	
 function Run ()
 {
 	$this->where = $path = stripslashes(@$_REQUEST['path']);
@@ -1605,9 +2042,13 @@ function _DirectoryName ($path='')
 # MAIN SECTION - come on !
 ###################################################################
 
+/*
 if (! isset($SMBWEBCLIENT_CLASS)) {
 	$swc = new smbwebclient;
 	$swc->Run();
 }
+*/
+
+print_r(smbclient_stream_wrapper::ParseURL($argv[1]));
 
 ?>
