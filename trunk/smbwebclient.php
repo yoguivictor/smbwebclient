@@ -8,7 +8,7 @@
 ## You need to have ''smbclient'' installed in your system
 ## in order to use this program.
 ##
-## oooo
+## ooooo
 
 define ('l_skip', 1);
 define ('l_shares', 2);
