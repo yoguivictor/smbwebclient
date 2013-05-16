@@ -27,9 +27,9 @@
 
 define ('SMBCLIENT_PATH', 'smbclient');
 define ('SMBCLIENT_OPTIONS', '-O "TCP_NODELAY IPTOS_LOWDELAY SO_KEEPALIVE SO_RCVBUF=8192 SO_SNDBUF=8192"');
-define ('SMBCLIENT_AUTHMODE', 'arg'); # 'env' to use USER enviroment variable
 
 
+define ('SMBCLIENT_VERSION', '3.5.6');
 define ('SMBCLIENT_PORT', 139);
 
 
@@ -52,25 +52,12 @@ class smbclient_stream_wrapper {
 static $__cache = array ('stat' => array (), 'dir' => array ());
 
 static $re = array (
-	'^added interface ip=(.*) bcast=(.*) nmask=(.*)$' => 'skip',
-	'Anonymous login successful' => 'skip',
-	'^Domain=\[(.*)\] OS=\[(.*)\] Server=\[(.*)\]$' => 'skip',
-	'([0-9]+) blocks of size ([0-9]+)\. ([0-9]+) blocks available' => 'skip',
-	'Got a positive name query response from ' => 'skip',
-	'^(session setup failed): (.*)$' => 'error',
-	'^(.*): ERRSRV - ERRbadpw' => 'error',
-	'^Error returning browse list: (.*)$' => 'error',
 	'^tree connect failed: (.*)$' => 'error',
-	'^(Connection to .* failed)$' => 'error',
-	'^NT_STATUS_(.*) ' => 'error',
-	'^NT_STATUS_(.*)\$' => 'error',
-	'ERRDOS - ERRbadpath \((.*).\)' => 'error',
-	'cd (.*): (.*)$' => 'error',
-	'^cd (.*): NT_STATUS_(.*)' => 'error',
-	'^([0-9]+)[ ]+([0-9]+)[ ]+(.*)$' => 'skip',
-	'^Job ([0-9]+) cancelled' => 'skip',
-	'^[ ]+(.*)[ ]+([0-9]+)[ ]+(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[ ](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ ]+([0-9]+)[ ]+([0-9]{2}:[0-9]{2}:[0-9]{2})[ ]([0-9]{4})$' => 'files',
-	'^message start: ERRSRV - (ERRmsgoff)' => 'error'
+	'^Connection to .* failed \(Error (.*)\)$' => 'error',
+	'^(NT_STATUS_NO_SUCH_FILE) listing' => 'error',
+	'^(NT_STATUS_ACCESS_DENIED) listing' => 'error',
+	'^(NT_STATUS_OBJECT_NAME_INVALID) listing' => 'error',
+	'^[ ]+(.*)[ ]+([0-9]+)[ ]+(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[ ](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ ]+([0-9]+)[ ]+([0-9]{2}:[0-9]{2}:[0-9]{2})[ ]([0-9]{4})$' => 'files'
 );
 
 static $__info = array();
@@ -84,9 +71,11 @@ var $parsedURL = array ();
 var $mode;
 var $tmpfile;
 var $needFlush = FALSE;
+*/
+
+
 var $dir = array ();
 var $dirIndex = -1;
-*/
 
 
 
@@ -108,26 +97,22 @@ function ParseURL ($url)
 	if (! ($pu['port'] = intval(@$pu['port']))) $pu['port'] = SMBCLIENT_PORT;
 
 	($pu['share'] <> '') OR die("error: a shared resource name must be specified !\n");
+	if ($pu['path'] == '') $pu['path'] = '.';
 
 	return $pu;
 }
 
 function Client ($command, $purl)
 {
-	smbclient_stream_wrapper::$__info = array();
+	smbclient_stream_wrapper::$__info = array('info' => array(), 'error' => FALSE);
+
 	# setting user & pass
-	$auth = '';
-	if ($purl['user'] <> '') {
-		if (SMBCLIENT_AUTHMODE == 'env') {
-			putenv("USER={$purl['user']}%{$purl['pass']}");
-		} else {
-			$auth = ' --user='.escapeshellarg($purl['user'].'%'.$purl['pass']);
-		}
-	}
+	$auth = ' --user='.escapeshellarg($purl['user'].'%'.$purl['pass']);
 	# setting port (from URL)
 	$port = ($purl['port'] <> SMBCLIENT_PORT) ? ' --port '.escapeshellarg($purl['port']) : '';
 	# target
 	$share = escapeshellarg ('//'.$purl['host'].'/'.$purl['share']);
+
 	# smbclient command to execute
 	$command = ' --command '.escapeshellarg($command);
 
@@ -146,6 +131,7 @@ function Client ($command, $purl)
 	# parse smbclient output
 	$output = popen ("{$smbclient} 2>/dev/null", 'r');
 	while ($line = fgets ($output, 4096)) {
+		print $line;
 		# search for a match
 		list ($tag, $regs, $i) = array ('skip', array (), array ());
 		reset (smbclient_stream_wrapper::$re);
@@ -157,6 +143,7 @@ function Client ($command, $purl)
 		}
 		# parse line if matches re
 		switch ($tag) {
+			case 'skip':	continue;
 			case 'files':
 				# parse directory listing
 				list ($attr, $name) = preg_match ("/^(.*)[ ]+([D|A|H|S|R]+)$/", trim ($regs[1]), $regs2)
@@ -174,8 +161,9 @@ function Client ($command, $purl)
 					);
 				}
 				break;
-			case 'error':   trigger_error($regs[1], E_USER_ERROR);
-			default:	continue;
+			default:
+				smbclient_stream_wrapper::$__info['error'] = ($tag == 'error') ? $regs[1] : $line;
+				return smbclient_stream_wrapper::$__info;
 		}
         }
         pclose($output);
@@ -256,22 +244,26 @@ function url_stat ($url, $flags = STREAM_URL_STAT_LINK)
 
 # directories
 
-    # cache
+# cache
 
-    function adddircache ($url, $content) {
-        global $__smb_cache;
-        return $__smb_cache['dir'][$url] = $content;
-    }
+function AddDirCache ($url, $content)
+{
+	return smbclient_stream_wrapper::$__cache['dir'][$url] = $content;
+}
 
-    function getdircache ($url) {
-        global $__smb_cache;
-        return isset ($__smb_cache['dir'][$url]) ? $__smb_cache['dir'][$url] : FALSE;
-    }
+function GetDirCache ($url)
+{
+	return isset (smbclient_stream_wrapper::$__cache['dir'][$url]) ? smbclient_stream_wrapper::$__cache['dir'][$url] : FALSE;
+}
 
-    function cleardircache ($url='') {
-        global $__smb_cache;
-        if ($url == '') $__smb_cache['dir'] = array (); else unset ($__smb_cache['dir'][$url]);
-    }
+function ClearDirCache ($url='')
+{
+	if ($url == '') {
+		smbclient_stream_wrapper::$__cache['dir'] = array ();
+	} else {
+		unset (smbclient_stream_wrapper::$__cache['dir'][$url]);
+	}
+}
 
 
 # WRAPPER::dir_opendir
@@ -297,20 +289,26 @@ function dir_opendir ($url, $options)
 	}
 }
 
+# WRAPPER::dir_readdir
+
 function dir_readdir ()
 {
-	return ($this->dir_index < count($this->dir)) ? $this->dir[$this->dir_index++] : FALSE;
+	return ($this->dirIndex < count($this->dir)) ? $this->dir[$this->dirIndex++] : FALSE;
 }
+
+# WRAPPER::dir_rewinddir
 
 function dir_rewinddir ()
 {
-	$this->dir_index = 0;
+	$this->dirIndex = 0;
 }
+
+# WRAPPER::dir_closedir
 
 function dir_closedir ()
 {
 	$this->dir = array();
-	$this->dir_index = -1;
+	$this->dirIndex = -1;
 	return TRUE;
 }
 
@@ -2058,12 +2056,11 @@ if (! isset($SMBWEBCLIENT_CLASS)) {
 
 // print_r(smbclient_stream_wrapper::ParseURL($argv[1]));
 
-# print_r(smbclient_stream_wrapper::Client('ls', smbclient_stream_wrapper::ParseURL($argv[1])));
 
-$s = stat($argv[1]);
+// print_r(smbclient_stream_wrapper::Client($argv[2], smbclient_stream_wrapper::ParseURL($argv[1])));
 
-// if ($s['mode'] & S_IFDIR) die('es un directorio');
+$d = opendir($argv[1]);
 
-print_r($s);
+print_r(smbclient_stream_wrapper::$__cache);
 
 ?>
