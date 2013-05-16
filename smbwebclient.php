@@ -32,6 +32,17 @@ define ('SMBCLIENT_AUTHMODE', 'arg'); # 'env' to use USER enviroment variable
 
 define ('SMBCLIENT_PORT', 139);
 
+
+
+
+
+
+define ('S_IFDIR',  0040000);     # directory
+define ('S_IFREG',  0100000);     # regular
+define ('S_IRUSR',  0000400);     # read permission, owner
+define ('S_IWUSR',  0000200);     # write permission, owner
+define ('S_IXUSR',  0000100);     # execute/search permission, owner
+
 ###################################################################
 # SMBCLIENT_STREAM_WRAPPER - access to smbclient:// URIs
 ###################################################################
@@ -62,7 +73,7 @@ static $re = array (
 	'^message start: ERRSRV - (ERRmsgoff)' => 'error'
 );
 
-static $info = array();
+static $__info = array();
 
 
 # variables
@@ -103,7 +114,7 @@ function ParseURL ($url)
 
 function Client ($command, $purl)
 {
-	smbclient_stream_wrapper::$info = array();
+	smbclient_stream_wrapper::$__info = array();
 	# setting user & pass
 	$auth = '';
 	if ($purl['user'] <> '') {
@@ -135,17 +146,17 @@ function Client ($command, $purl)
 	# parse smbclient output
 	$output = popen ("{$smbclient} 2>/dev/null", 'r');
 	while ($line = fgets ($output, 4096)) {
+		# search for a match
 		list ($tag, $regs, $i) = array ('skip', array (), array ());
 		reset (smbclient_stream_wrapper::$re);
-		# search for a match
 		foreach (smbclient_stream_wrapper::$re as $r => $t) {
 			if (preg_match ('/'.$r.'/', $line, $regs)) {
 				$tag = $t;
 				break;
 			}
 		}
+		# parse line if matches re
 		switch ($tag) {
-			case 'skip':	continue;
 			case 'files':
 				# parse directory listing
 				list ($attr, $name) = preg_match ("/^(.*)[ ]+([D|A|H|S|R]+)$/", trim ($regs[1]), $regs2)
@@ -154,7 +165,7 @@ function Client ($command, $purl)
 				list ($his, $im) = array (
 					split(':', $regs[6]), 1 + strpos("JanFebMarAprMayJunJulAugSepOctNovDec", $regs[4]) / 3);
 				if ($name <> '.' AND $name <> '..') {
-					smbclient_stream_wrapper::$info['info'][$name] = array (
+					smbclient_stream_wrapper::$__info['info'][$name] = array (
 						$name,
 						(strpos($attr,'D') === FALSE) ? 'file' : 'folder',
 						'attr' => $attr,
@@ -164,26 +175,59 @@ function Client ($command, $purl)
 				}
 				break;
 			case 'error':   trigger_error($regs[1], E_USER_ERROR);
+			default:	continue;
 		}
         }
         pclose($output);
 
-        return smbclient_stream_wrapper::$info;
+        return smbclient_stream_wrapper::$__info;
 }
 
 
 function GetStatCache ($url)
 {
+	# maybe a session var ?
 	return isset (smbclient_stream_wrapper::$__cache['stat'][$url]) ? smbclient_stream_wrapper::$__cache['stat'][$url] : FALSE;
 }
 
 function AddStatCache ($url, $info)
 {
-	$is_file = (strpos ($info['attr'],'D') === FALSE);
-	$s = ($is_file) ? stat ('/etc/passwd') : stat ('/tmp');
-	$s[7] = $s['size'] = $info['size'];
-	$s[8] = $s[9] = $s[10] = $s['atime'] = $s['mtime'] = $s['ctime'] = $info['time'];
-	return smb_stream_wrapper::$__cache['stat'][$url] = $s;
+	# maybe a session var ?
+	# builds stat array
+	if (strpos ($o['info']['attr'],'D') === FALSE) {
+		$mode = S_IFREG | S_IRUSR | S_IWUSR; # file
+	} else {
+		$mode = S_IFDIR | S_IRUSR | S_IWUSR | S_IXUSR; # dir
+	}
+	$stat = array (
+		0		=>	date('Y'),
+		1		=>	0,
+		2		=>	$mode,
+		3		=>	1,
+		4		=>	0,
+		5		=>	0,
+		6		=>	0,
+		7		=>	$o['info']['size'],
+		8		=>	$o['info']['time'],
+		9		=>	$o['info']['time'],
+		10		=>	$o['info']['time'],
+		11		=>	-1,
+		12		=>	-1,
+		'dev'		=>	date('Y'),
+		'ino'		=>	0,
+		'mode'		=>	$mode,
+		'nlink'		=>	1,
+		'uid'		=>	0,
+		'gid'		=>	0,
+		'rdev'		=>	0,
+		'size'		=>	$o['info']['size'],
+		'atime'		=>	$o['info']['time'],
+		'mtime'		=>	$o['info']['time'],
+		'ctime'		=>	$o['info']['time'],
+		'blksize'	=>	-1,
+		'blocks'	=>	-1,
+	);
+	return smbclient_stream_wrapper::$__cache['stat'][$url] = $stat;
 }
 
 
@@ -192,25 +236,84 @@ function AddStatCache ($url, $info)
 
 function url_stat ($url, $flags = STREAM_URL_STAT_LINK)
 {
-	if ($s = smbclient_stream_wrapper::GetStatCache($url)) {
-		return $s;
-	}
-	list ($stat, $pu) = array (array (), smbclient_stream_wrapper::ParseURL ($url));
+	if ($stat = smbclient_stream_wrapper::GetStatCache($url)) return $stat;
 
+	list ($stat, $pu) = array (array (), smbclient_stream_wrapper::ParseURL ($url));
 	if ($o = smbclient_stream_wrapper::Client ('dir "'.$pu['path'].'"', $pu)) {
-		print_r($o);
 		$p = split ("[\\]", $pu['path']);
 		$name = $p[count($p)-1];
 		if (isset ($o['info'][$name])) {
-			$stat = smbclient_stream_wrapper::AddStatCache ($url, $o['info'][$name]);
+			return smbclient_stream_wrapper::AddStatCache ($url, $o['info']);
 		} else {
 			trigger_error ("url_stat(): path '{$pu['path']}' not found", E_USER_WARNING);
 		}
 	} else {
 		trigger_error ("url_stat(): dir failed for path '{$pu['path']}'", E_USER_WARNING);
 	}
-	return $stat;
 }
+
+
+
+# directories
+
+    # cache
+
+    function adddircache ($url, $content) {
+        global $__smb_cache;
+        return $__smb_cache['dir'][$url] = $content;
+    }
+
+    function getdircache ($url) {
+        global $__smb_cache;
+        return isset ($__smb_cache['dir'][$url]) ? $__smb_cache['dir'][$url] : FALSE;
+    }
+
+    function cleardircache ($url='') {
+        global $__smb_cache;
+        if ($url == '') $__smb_cache['dir'] = array (); else unset ($__smb_cache['dir'][$url]);
+    }
+
+
+# WRAPPER::dir_opendir
+
+function dir_opendir ($url, $options)
+{
+	if ($d = $this->GetDirCache ($url)) {
+		$this->dir = $d;
+		$this->dirIndex = 0;
+		return TRUE;
+	}
+	$pu = smbclient_stream_wrapper::ParseURL($url);
+	if ($o = smbclient_stream_wrapper::Client ('dir "'.$pu['path'].'\*"', $pu)) {
+		$this->dir = array_keys($o['info']);
+		$this->dirIndex = 0;
+		$this->AddDirCache ($url, $this->dir);
+		foreach ($o['info'] as $name => $info) {
+			smbclient_stream_wrapper::AddStatCache($url.'/'.urlencode($name), $info);
+		}
+		return TRUE;
+	} else {
+		trigger_error ("dir_opendir(): dir failed for path '{$path}'", E_USER_WARNING);
+	}
+}
+
+function dir_readdir ()
+{
+	return ($this->dir_index < count($this->dir)) ? $this->dir[$this->dir_index++] : FALSE;
+}
+
+function dir_rewinddir ()
+{
+	$this->dir_index = 0;
+}
+
+function dir_closedir ()
+{
+	$this->dir = array();
+	$this->dir_index = -1;
+	return TRUE;
+}
+
 
 
 /*
@@ -265,66 +368,8 @@ function url_stat ($url, $flags = STREAM_URL_STAT_LINK)
 
 
 
-    # directories
-
-    function dir_opendir ($url, $options) {
-        if ($d = $this->getdircache ($url)) {
-            $this->dir = $d;
-            $this->dir_index = 0;
-            return TRUE;
-        }
-        $pu = smbclient_stream_wrapper::ParseURL($url);
-        switch ($pu['type']) {
-            case 'host':
-                if ($o = smbclient_stream_wrapper::Look ($pu)) {
-                   $this->dir = $o['disk'];
-                   $this->dir_index = 0;
-                } else {
-                   trigger_error ("dir_opendir(): list failed for host '{$pu['host']}'", E_USER_WARNING);
-                }
-                break;
-            case 'share':
-            case 'path':
-                if ($o = smbclient_stream_wrapper::Execute ('dir "'.$pu['path'].'\*"', $pu)) {
-                   $this->dir = array_keys($o['info']);
-                   $this->dir_index = 0;
-                   $this->adddircache ($url, $this->dir);
-                   foreach ($o['info'] as $name => $info) {
-                       smbclient_stream_wrapper::AddStatCache($url . '/' . urlencode($name), $info);
-                   }
-                } else {
-                   trigger_error ("dir_opendir(): dir failed for path '{$path}'", E_USER_WARNING);
-                }
-                break;
-            default:
-                trigger_error ('dir_opendir(): error in URL', E_USER_ERROR);
-        }
-        return TRUE;
-    }
-
-    function dir_readdir () { return ($this->dir_index < count($this->dir)) ? $this->dir[$this->dir_index++] : FALSE; }
-
-    function dir_rewinddir () { $this->dir_index = 0; }
-
-    function dir_closedir () { $this->dir = array(); $this->dir_index = -1; return TRUE; }
 
 
-    # cache
-
-    function adddircache ($url, $content) {
-        global $__smb_cache;
-        return $__smb_cache['dir'][$url] = $content;
-    }
-
-    function getdircache ($url) {
-        global $__smb_cache;
-        return isset ($__smb_cache['dir'][$url]) ? $__smb_cache['dir'][$url] : FALSE;
-    }
-
-    function cleardircache ($url='') {
-        global $__smb_cache;
-        if ($url == '') $__smb_cache['dir'] = array (); else unset ($__smb_cache['dir'][$url]);
-    }
 
 
     # streams
@@ -2015,6 +2060,10 @@ if (! isset($SMBWEBCLIENT_CLASS)) {
 
 # print_r(smbclient_stream_wrapper::Client('ls', smbclient_stream_wrapper::ParseURL($argv[1])));
 
-print_r(stat($argv[1]));
+$s = stat($argv[1]);
+
+// if ($s['mode'] & S_IFDIR) die('es un directorio');
+
+print_r($s);
 
 ?>
