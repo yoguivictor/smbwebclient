@@ -33,15 +33,12 @@ define ('SMBCLIENT_VERSION', '3.5.6');
 define ('SMBCLIENT_PORT', 139);
 
 
+define ('S_IFDIR',  0040000); # directory
+define ('S_IFREG',  0100000); # regular
+define ('S_IRUSR',  0000444); # read permission
+define ('S_IWUSR',  0000222); # write permission
+define ('S_IXUSR',  0000111); # execute/search permission
 
-
-
-
-define ('S_IFDIR',  0040000);     # directory
-define ('S_IFREG',  0100000);     # regular
-define ('S_IRUSR',  0000400);     # read permission, owner
-define ('S_IWUSR',  0000200);     # write permission, owner
-define ('S_IXUSR',  0000100);     # execute/search permission, owner
 
 
 
@@ -64,17 +61,15 @@ var $streamTmpfile = '';
 var $streamNeedFlush = FALSE;
 
 
-# stats cache
+# stats & dir cache
 
 function GetStatCache ($url)
 {
-	# maybe a session var ?
 	return isset (cached_stream_wrapper::$__cache['stat'][$url]) ? cached_stream_wrapper::$__cache['stat'][$url] : FALSE;
 }
 
 function AddStatCache ($url, $stat)
 {
-	# maybe a session var ?
 	return cached_stream_wrapper::$__cache['stat'][$url] = $stat;
 }
 
@@ -86,8 +81,6 @@ function ClearStatCache ($url='')
 		unset (cached_stream_wrapper::$__cache['stat'][$url]);
 	}
 }
-
-# dir cache
 
 function AddDirCache ($url, $content)
 {
@@ -108,12 +101,7 @@ function ClearDirCache ($url='')
 	}
 }
 
-
-
-# streams
-
 # WRAPPER::stream_open
-
 function stream_open ($url, $mode, $options, $openPath)
 {
 	$this->streamURL = $url;
@@ -133,26 +121,23 @@ function stream_open ($url, $mode, $options, $openPath)
 		case 'x+':	$this->ClearDirCache();
 				$this->streamTmpfile = tempnam('/tmp', 'cached_sw.up.');
 	}
-	$this->stream = fopen ($this->streamTmpfile, $mode);
+	$this->stream = fopen($this->streamTmpfile, $mode);
 	return TRUE;
 }
 
 # WRAPPER::stream_close
-
 function stream_close ()
 {
 	return fclose($this->stream);
 }
 
 # WRAPPER::stream_read
-
 function stream_read ($count)
 {
 	return fread($this->stream, $count);
 }
 
 # WRAPPER::stream_write
-
 function stream_write ($data)
 {
 	$this->streamNeedFlush = TRUE;
@@ -160,21 +145,18 @@ function stream_write ($data)
 }
 
 # WRAPPER::stream_eof
-
 function stream_eof ()
 {
 	return feof($this->stream);
 }
 
 # WRAPPER::stream_tell
-
 function stream_tell ()
 {
 	return ftell($this->stream);
 }
 
 # WRAPPER::stream_seek
-
 function stream_seek ($offset, $whence=NULL)
 {
 	return fseek($this->stream, $offset, $whence);
@@ -182,7 +164,6 @@ function stream_seek ($offset, $whence=NULL)
 
 
 # WRAPPER::stream_flush
-
 function stream_flush ()
 {
 	if ($this->streamMode <> 'r' AND $this->streamNeedFlush) {
@@ -192,18 +173,17 @@ function stream_flush ()
 	}
 }
 
-# WRAPPER::stream_stat ()
-
+# WRAPPER::stream_stat
 function stream_stat ()
 {
-	return $this->url_stat ($this->streamURL);
+	return $this->url_stat($this->streamURL);
 }
 
 function __destruct ()
 {
 	if ($this->streamTmpfile <> '') {
-		if ($this->streamNeedFlush) $this->stream_flush ();
-		unlink ($this->streamTmpfile);
+		if ($this->streamNeedFlush) $this->stream_flush();
+		unlink($this->streamTmpfile);
 	}
 }
 
@@ -218,13 +198,19 @@ function __destruct ()
 
 class smbclient_stream_wrapper extends cached_stream_wrapper {
 
+static $debugLevel = 0;
+static $defaultUser = '';
+static $defaultPass = '';
 
 static $re = array (
 	'^tree connect failed: (.*)$' => 'error',
 	'^Connection to .* failed \(Error (.*)\)$' => 'error',
-	'^(NT_STATUS_NO_SUCH_FILE) listing' => 'error',
 	'^(NT_STATUS_ACCESS_DENIED) listing' => 'error',
-	'^(NT_STATUS_OBJECT_NAME_INVALID) listing' => 'error',
+	'^(NT_STATUS_NO_SUCH_FILE) listing' => 'error',
+	'^(NT_STATUS_OBJECT_NAME_COLLISION)' => 'error',
+	'^(NT_STATUS_OBJECT_NAME_INVALID)' => 'error',
+	'^(NT_STATUS_OBJECT_NAME_NOT_FOUND) removing remote directory file' => 'error',
+	'^(NT_STATUS_OBJECT_PATH_NOT_FOUND)' => 'error',
 	'^[ ]+(.*)[ ]+([0-9]+)[ ]+(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[ ](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ ]+([0-9]+)[ ]+([0-9]{2}:[0-9]{2}:[0-9]{2})[ ]([0-9]{4})$' => 'files'
 );
 
@@ -233,8 +219,6 @@ static $__info = array();
 var $dir = array ();
 var $dirIndex = -1;
 
-static $defaultUser = '';
-static $defaultPass = '';
 
 
 # get info needed by smbclient from URL
@@ -335,8 +319,12 @@ function Client ($command, $purl)
 	));
 
 	# parse smbclient output
+	(smbclient_stream_wrapper::$debugLevel < 2) OR print "\n\n[".$smbclient."]\n\n";
 	$output = popen ("{$smbclient} 2>/dev/null", 'r');
 	while ($line = fgets ($output, 4096)) {
+
+		(smbclient_stream_wrapper::$debugLevel < 3) OR print $line;
+
 		# search for a match
 		list ($tag, $regs, $i) = array ('skip', array (), array ());
 		reset (smbclient_stream_wrapper::$re);
@@ -358,16 +346,14 @@ function Client ($command, $purl)
 					$name = trim ($regs[1]);
 					$attr = '';
 				}
-				if ($name <> '.' AND $name <> '..') {
-					$his = split(':', $regs[6]);
-					$im  = 1 + strpos("JanFebMarAprMayJunJulAugSepOctNovDec", $regs[4]) / 3;
-					$size = intval($regs[2]);
-					$time = mktime ($his[0], $his[1], $his[2], $im, $regs[5], $regs[7]);
-					$stat = smbclient_stream_wrapper::MakeStat($attr, $size, $time);
-					smbclient_stream_wrapper::$__info['info'][$name] = $stat;
-				}
+				$his = split(':', $regs[6]);
+				$im  = 1 + strpos("JanFebMarAprMayJunJulAugSepOctNovDec", $regs[4]) / 3;
+				$size = intval($regs[2]);
+				$time = mktime ($his[0], $his[1], $his[2], $im, $regs[5], $regs[7]);
+				$stat = smbclient_stream_wrapper::MakeStat($attr, $size, $time);
+				smbclient_stream_wrapper::$__info['info'][$name] = $stat;
 				break;
-			default:
+			case 'error':
 				smbclient_stream_wrapper::$__info['error'] = ($tag == 'error') ? $regs[1] : $line;
 				return smbclient_stream_wrapper::$__info;
 		}
@@ -380,13 +366,15 @@ function Client ($command, $purl)
 function Download ($url, $localFile)
 {
 	$pu = smbclient_stream_wrapper::ParseURL($url);
-	$this->Client ('get "'.$pu['path'].'" "'.$localFile.'"', $pu);
+	$o = $this->Client ('get "'.$pu['path'].'" "'.$localFile.'"', $pu);
+	return $o['error'] == '';
 }
 
 function Upload ($localFile, $url)
 {
 	$pu = smbclient_stream_wrapper::ParseURL($url);
-	$this->Client ('put "'.$localFile.'" "'.$pu['path'].'"', $pu);
+	$o = $this->Client ('put "'.$localFile.'" "'.$pu['path'].'"', $pu);
+	return $o['error'] == '';
 }
 
 
@@ -399,24 +387,25 @@ function url_stat ($url, $flags = STREAM_URL_STAT_LINK)
 	if ($stat = smbclient_stream_wrapper::GetStatCache($url)) return $stat;
 
 	list ($stat, $pu) = array (array (), smbclient_stream_wrapper::ParseURL ($url));
-	if ($o = smbclient_stream_wrapper::Client ('dir "'.$pu['path'].'"', $pu)) {
+	$path = ($pu['path'] == '.') ? '' : $pu['path'];
+	if ($o = smbclient_stream_wrapper::Client ('dir "'.$path.'"', $pu)) {
 		$p = split ("[\\]", $pu['path']);
 		$name = $p[count($p)-1];
-		if ($pu['path'] == '.' OR isset ($o['info'][$name])) {
+		if (isset ($o['info'][$name])) {
 			return smbclient_stream_wrapper::AddStatCache ($url, $o['info'][$name]);
 		} else {
-			trigger_error ("url_stat(): path '{$pu['path']}' not found", E_USER_WARNING);
+			#trigger_error ("url_stat(): path '{$pu['path']}' not found", E_USER_WARNING);
+			return FALSE;
 		}
 	} else {
-		trigger_error ("url_stat(): dir failed for path '{$pu['path']}'", E_USER_WARNING);
+		#trigger_error ("url_stat(): dir failed for path '{$pu['path']}'", E_USER_WARNING);
+		return FALSE;
 	}
 }
 
 
 
 # directories
-
-
 
 # WRAPPER::dir_opendir
 
@@ -469,9 +458,9 @@ function dir_closedir ()
 function unlink ($url)
 {
 	$pu = smbclient_stream_wrapper::ParseURL($url);
-	($pu['path'] <> '.') OR trigger_error('unlink(): error in URL', E_USER_ERROR);
 	smbclient_stream_wrapper::ClearStatCache ($url);
-	return smbclient_stream_wrapper::Client ('del "'.$pu['path'].'"', $pu);
+	$o = smbclient_stream_wrapper::Client ('del "'.$pu['path'].'"', $pu);
+	return $o['error'] == '';
 }
 
 # WRAPPER::rename
@@ -481,9 +470,9 @@ function rename ($url_from, $url_to)
 	list ($from, $to) = array (smbclient_stream_wrapper::ParseURL($url_from), smbclient_stream_wrapper::ParseURL($url_to));
 	($from['host'] == $to['host'] AND $from['share'] == $to['share'] AND $from['user'] == $to['user'] AND $from['pass'] == $to['pass'])
 		OR trigger_error('rename(): FROM & TO must be in same server-share-user-pass', E_USER_ERROR);
-	($from['path'] <> '.' AND $to['path'] <> '.') OR trigger_error('rename(): error in URL', E_USER_ERROR);
 	smbclient_stream_wrapper::ClearStatCache ($url_from);
-	return smbclient_stream_wrapper::Client ('rename "'.$from['path'].'" "'.$to['path'].'"', $to);
+	$o = smbclient_stream_wrapper::Client ('rename "'.$from['path'].'" "'.$to['path'].'"', $to);
+	return $o['error'] == '';
 }
 
 # WRAPPER::mkdir
@@ -491,8 +480,11 @@ function rename ($url_from, $url_to)
 function mkdir ($url, $mode, $options)
 {
 	$pu = smbclient_stream_wrapper::ParseURL($url);
-	($pu['path'] <> '.') OR trigger_error('mkdir(): error in URL', E_USER_ERROR);
-	return smbclient_stream_wrapper::Client ('mkdir "'.$pu['path'].'"', $pu);
+	$o = smbclient_stream_wrapper::Client ('mkdir "'.$pu['path'].'"', $pu);
+	if ($o['error'] <> '') {
+		trigger_error($o['error'], E_USER_WARNING);
+	}
+	return $o['error'] == '';
 }
 
 # WRAPPER::rmdir
@@ -502,7 +494,8 @@ function rmdir ($url)
 	$pu = smbclient_stream_wrapper::ParseURL($url);
 	($pu['path'] <> '.') OR trigger_error('rmdir(): error in URL', E_USER_ERROR);
 	smbclient_stream_wrapper::ClearStatCache ($url);
-	return smbclient_stream_wrapper::Client ('rmdir "'.$pu['path'].'"', $pu);
+	$o = smbclient_stream_wrapper::Client ('rmdir "'.$pu['path'].'"', $pu);
+	return $o['error'] == '';
 }
 
 }
@@ -517,58 +510,341 @@ stream_wrapper_register('smbclient', 'smbclient_stream_wrapper')
 
 
 
-###################################################################
-# smbwebclient.php
-# This script is a web interface to a Windows Network.
-#
-# Installation:
-#   1. You will need smbclient (from SAMBA package) and PHP 4.1+. 
-#   2. Change your settings (editing this file)  --  see below
-#   3. Copy it to your web server path as smbwebclient.php and run it
-#			 from your web browser. That's all.
-#
-# Putting settings in another file:
-#
-# 	1) /var/www/smbwebclient.php
-#
-#	(?php
-#		$SMBWEBCLIENT_CLASS = 'smbwebclient_config';
-#		include '/usr/share/samba/smbwebclient.php';
-#		include '/etc/samba/smbwebclient.conf';
-#		$swc = new smbwebclient_config;
-#		$swc->Run();
-#	?)
-#
-# 	2) /etc/samba/smbwebclient.conf:
-#
-#	(?php
-#		class smbwebclient_config extends smbwebclient {
-#			var $cfgSambaRoot = 'MYDOMAIN/MYSERVER';
-#			var $cfgDefaultLanguage = 'es';
-#			// all your settings ...
-#		}
-#	?)
-#
-#		3) /usr/share/samba/smbwebclient.php (this file)
-#
-# Homepage: http://smbwebclient.sourceforge.net
-#
-# Copyright (C) 2003-2005 Victor M. Varela <vmvarela@gmail.com>
-#
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-$SMBWEBCLIENT_VERSION = '2.9.1';
-###################################################################
 
-class smbwebclient extends samba {
+class webapp {
+
+# session, userauth, logging, i18n, inline resources, html & templates
+
+var $cfgLogId = 'webapp';
+var $cfgSessionName = 'WebappSessionID';
+var $cfgFacility = LOG_DAEMON;
+var $cfgDefaultLanguage 'es.utf-8';
+var $languages;
+var $lang;
+
+var $cfgInlineFiles = true;
+var $inlineFiles = array ();
+
+
+function InitSession ()
+{
+	set_time_limit(1200);
+	error_reporting(E_ALL ^ E_NOTICE);
+
+	openlog($this->cfgLogId, LOG_ODELAY | LOG_PID, $this->cfgFacility);
+
+	if ($this->cfgSessionName <> '') session_name($this->cfgSessionName);
+	session_start();
+}
+
+function InitLanguage ()
+{
+	# load languages
+	foreach (preg_split('/\n/',$this->GetInlineFile('data/languages.csv')) as $line) {
+		$a = preg_split('/;/', $line);
+		$this->languages[$a[0]] = $a[1];
+	}
+
+	# default language
+	$this->lang = $this->cfgDefaultLanguage;
+	$langOK = false;
+
+	# param from GET
+	if (isset($_REQUEST['lang']) AND isset($this->strings[$_REQUEST['lang']])) {
+		$this->lang = $_REQUEST['lang'];
+		$langOK = true;
+	# current session
+	} elseif (isset($_SESSION['webappLanguage']) AND isset($this->strings[$_SESSION['webappLanguage']])) {
+		$this->lang = $_SESSION['webappLanguage'];
+	} else {
+		# take a look at HTTP_ACCEPT_LANGUAGE
+		foreach (preg_split('/,/', $_SERVER['HTTP_ACCEPT_LANGUAGE']) as $lang)
+		foreach ($this->languages as $key => $filter)
+		if (isset($this->strings[$key]) AND preg_match('/^('.$filter.')(;q=[0-9]\\.[0-9])?$/i', $lang)) {
+			$this->lang = $key;
+			$langOK = true;
+		}
+		# look at HTTP_USER_AGENT
+		if (! $langOK) {
+			reset($this->languages);
+			foreach ($this->languages as $key => $filter)
+			if (isset($this->strings[$key])
+			AND preg_match('/(\(|\[|;[[:space:]])(' . $filter . ')(;|\]|\))/i', $_SERVER['HTTP_USER_AGENT'])) {
+				$this->lang = $key;
+				$langOK = true;
+			}
+		}
+	}
+	if ($langOK) $_SESSION['webappLanguage'] = $this->lang;
+}
+
+# returns a string in a given language
+function _($str)
+{
+	# for english, all is done !
+	if ($this->lang == 'en') return $str;
+
+	# search string at english list (get position)
+	$pos = array_search($str, $this->strings['en']);
+	if (($pos = array_search($str, $this->strings['en'])) === FALSE) return $str;
+
+	# found position at current language (ok!)
+	if ($this->strings[$this->lang][$pos] <> '') return $this->strings[$this->lang][$pos];
+
+	# found position at default language (better than nothing!)
+	if ($this->strings[$this->cfgDefaultLanguage][$pos] <> '') return $this->strings[$this->cfgDefaultLanguage][$pos];
+
+	# well, I cannot do anything better !
+	return $str;
+}
+
+function DumpFile($file='', $name='', $isAttachment=false, $isCacheable=false)
+{
+	if ($name == '') $name = basename($file);
+	$pi = pathinfo(strtolower($name));
+	$mimeType = @$this->mimeTypes[@$pi['extension']];
+	if ($mimeType == '') $mimeType = 'application/octet-stream';
+
+	# dot bug with IE
+	if (strstr($_SERVER['HTTP_USER_AGENT'], "MSIE")) {
+		$name = preg_replace('/\./','%2e', $name, substr_count($name, '.') - 1);
+	}
+
+	header("Cache-control: ".($isCacheable ? "public" : "private"));
+	header("Pragma: public");
+	header('MIME-Version: 1.0');
+	header("Content-Type: $mimeType; name =\"".$name."\"");
+
+	$isAttachment = ($isAttachment) ? "attachment; " : "";
+	header("Content-Disposition: $isAttachment filename=\"".$name."\"");
+
+	if ($file <> '' AND is_readable($file)) {
+		$fp = fopen($file, "r");
+		while (! feof($fp)) {
+			print fread($fp,65536);
+			flush();
+		}
+		fclose($fp);
+	}
+}
+
+function GetInlineFile ($file)
+{
+	if (! $this->cfgInlineFiles) {
+		# if does not exists, write from inline file ! (devel)
+		if (! is_readable($file)) {
+			$f = fopen($file, 'wb');
+			fwrite($f, base64_decode($this->inlineFiles[$file]));
+			fclose($f);
+		}
+		$f = fopen($file, 'r');
+		$data = fread ($f, filesize($file));
+		fclose ($f);
+	} else {
+		if (isset($_SESSION['webappUncodedInlineFiles'][$file])) {
+			$data =  $_SESSION['webappUncodedInlineFiles'][$file];
+		} else {
+			$data = base64_decode($this->inlineFiles[$file]);
+			$_SESSION['webappUncodedInlineFiles'][$file] = $data;
+		}
+	}
+	return $data;
+}
+
+function DumpInlineFile ($file)
+{
+	$this->DumpFile('',$file,false,true);
+	print $this->GetInlineFile ($file);
+}
+
+function GetIP()
+{
+	foreach (array('HTTP_X_FORWARDED','HTTP_VIA','REMOTE_ADDR') as $var) {
+		if (isset($_SERVER[$var])) return $_SERVER[$var];
+	}
+	return 'unknown';
+}                                                                   
+
+# debugging messages
+function Debug ($message, $level=0)
+{
+	if ($level <= $this->debug) {
+		foreach (preg_split('/\n/',$message) as $line) {
+			syslog(LOG_INFO, $this->user.'['.$this->GetIP().']: '.$line);
+		}
+	}
+}
+
+# HTML page
+function Page ($title='', $content='')
+{
+	if (@$_SESSION['webappErrorMessage'] <> '') {
+		$content .= "\n<script language=\"Javascript\">alert(\"{$_SESSION['webappErrorMessage']}\")</script>\n";
+		$_SESSION['webappErrorMessage'] = '';
+	}
+	return $this->Template('style/page.thtml', array(
+		'{title}' => $title,
+		'{charset}' => $this->cfgDefaultCharset,
+		'{content}' => $content,
+		'{style}' => $this->GetUrl('style/'),
+		'{favicon}' => $this->GetUrl('style/favicon.ico')
+	));
+}
+
+# loads an HTML template
+function Template ($file, $vars=array())
+{
+	return str_replace(array_keys($vars), array_values($vars), $this->GetInlineFile($file));
+}
+
+# HTML a href
+function Link ($title, $url='', $name='')
+{
+	if ($name <> '') $name = "name = \"{$name}\"";
+	return ($url == '') ? $title : "<a href=\"{$url}\" {$name}>{$title}</a>";
+}
+
+# HTML img
+function Image ($url, $alt='', $extra='')
+{
+	return ($url == '') ? $title : "<img src=\"{$url}\" alt=\"{$alt}\" border=\"0\" {$extra} />";
+}
+
+function Icon ($icon, $url='', $size=18)
+{
+	$image = $this->Image($this->GetUrl("style/{$icon}.png"),'#',"align=\"absmiddle\" width=\"$size\" height=\"$size\"");
+	return ($url <> '') ? $this->Link($image, $url) : $image;
+}
+
+# HTML select (combo)
+function Select ($name, $value, $options)
+{
+	$html = "<select name=\"{$name}\">\n";
+	foreach ($options as $key => $description) {
+		$selected = ($key == $value) ? "selected" : "";
+		$html .= "<option value=\"{$key}\" $selected>{$description}</option>\n";
+	}
+	$html .= "</select>\n";
+	return $html;
+}
+
+# HTML check box
+function CheckBox ($name, $value, $checked = false)
+{
+	return $this->Input($name, $value, 'checkbox', $checked ? "checked" : "");
+}
+
+function Input ($name, $value = '', $type = 'text', $extra = '')
+{
+	return "<input type=\"{$type}\" name=\"{$name}\" value=\"".htmlentities($value, ENT_COMPAT, $this->cfgDefaultCharset)."\" {$extra}/>";
+}
+
+function ErrorMessage ($msg)
+{
+	$_SESSION['webappErrorMessage'] = @$_SESSION['webappErrorMessage'] . $msg;
+}
+
+function CleanCachedAuth ()
+{
+	$mode = $this->type;
+	@$_SESSION['webappCachedAuth'][$mode][$this->$mode] = '';
+}
+
+# basic auth
+function GetAuth ($command = 'get')
+{
+	switch ($command) {
+		case 'get':
+			if (@$_GET['auth'] == 1 OR ($this->cfgAnonymous <> true AND !isset($_SERVER['PHP_AUTH_USER']))) {
+				$_SESSION['webappAuthSubmit'] = true;
+				$time = date("h:i:s");
+				$path = $this->PrintablePath();
+				header("WWW-Authenticate: Basic realm=\"{$path} ($time)\"");
+				header("HTTP/1.0 401 Unauthorized");
+				print $this->Page('unauthorized');
+				exit;
+			}
+			$this->user = stripslashes(@$_SERVER['PHP_AUTH_USER']);
+			$this->pw = stripslashes(@$_SERVER['PHP_AUTH_PW']);
+			break;
+		case 'submit':
+			if (@$_SESSION['webappAuthSubmit']) {
+				$_SESSION['webappAuthSubmit'] = false;
+				$this->user = stripslashes(@$_SERVER['PHP_AUTH_USER']);
+				$this->pw = stripslashes(@$_SERVER['PHP_AUTH_PW']);
+				return true;
+			}
+			return false;
+	}
+}
+
+function GetCachedAuth ()
+{
+	$this->user = $this->pw = '';
+	$nextLevel = array('network'=>'','workgroup'=>'network','server'=>'workgroup','share'=>'server');
+	if ($this->GetAuth('submit')) {
+		# store auth in cache
+		$mode = $this->type;
+		$_SESSION['swcCachedAuth'][$mode][$this->$mode]['User'] = $this->user;
+		$_SESSION['swcCachedAuth'][$mode][$this->$mode]['Password'] = $this->pw;
+		for ($mode = $nextLevel[$mode]; $mode <> ''; $mode = $nextLevel[$mode]) {
+			if (! isset($_SESSION['swcCachedAuth'][$mode][$this->$mode])) {
+				$_SESSION['swcCachedAuth'][$mode][$this->$mode]['User'] = $this->user;
+				$_SESSION['swcCachedAuth'][$mode][$this->$mode]['Password'] = $this->pw;
+			}
+		}
+	} elseif (@$_GET['auth'] <> 1) {
+		# get auth from cache
+		for ($mode = $this->type; $mode <> ''; $mode = $nextLevel[$mode]) {
+			if (isset($_SESSION['swcCachedAuth'][$mode][$this->$mode])) {
+				$this->user = $_SESSION['swcCachedAuth'][$mode][$this->$mode]['User'];
+				$this->pw = $_SESSION['swcCachedAuth'][$mode][$this->$mode]['Password'];
+				break;
+			}
+		}
+		if ($this->user == '') $this->GetAuth('get');
+	} else $this->GetAuth('get');
+}
+
+
+
+# return an URL (adding a param)
+function GetUrl ($path='', $arg='', $val='')
+{
+	$get = $_GET;
+	$get['path'] = $path;
+
+	# delete switches from URL
+	$get['lang'] = $get['auth'] = '';
+
+	if ($arg <> '') {
+		if (! is_array($arg)) $get[$arg] = $val;
+		else foreach ($arg as $key=>$value) $get[$key] = $value;
+	}
+
+	# build query string
+	$query = array();
+	foreach ($get as $key=>$value) if ($value <> '') {
+		if ($this->cfgModRewrite <> true OR $key <> 'path') {
+			$query[] = urlencode($key).'='.urlencode($value);
+		}
+	}
+	if (($query = join('&',$query)) <> '') $query = '?'.$query;
+
+	if ($this->cfgModRewrite) {
+		return $this->cfgBaseUrl.str_replace('%2F','/',urlencode($get['path'])).$query;
+	} else {
+		return $_SERVER['PHP_SELF'].$query;
+	}
+}
+
+
+}
+
+
+
+
+class smbwebclient extends webapp {
 
 ###################################################################
 # CONFIGURATION SECTION - Change for your needs
@@ -706,7 +982,6 @@ var $cfgLogLevel = 0;
 # Log facility (User authentication: BasicAuth or FormAuth)
 #
 
-var $cfgFacility = LOG_DAEMON;
 
 
 ###################################################################
@@ -972,355 +1247,8 @@ function Run ()
 	$this->View ();
 }
 
-function InitSession ()
-{
-	set_time_limit(1200);
-	error_reporting(E_ALL ^ E_NOTICE);
-
-	openlog("smbwebclient", LOG_ODELAY | LOG_PID, $this->cfgFacility);
-
-	if ($this->cfgSessionName <> '') session_name($this->cfgSessionName);
-	session_start();
-}
-
-function InitLanguage ()
-{
-	# load languages
-    foreach (preg_split('/\n/',$this->GetInlineFile('data/languages.csv')) as $line) {
-		$a = preg_split('/;/', $line);
-		$this->languages[$a[0]] = $a[1];
-	}
-
-	# default language
-	$this->lang = $this->cfgDefaultLanguage;
-	$langOK = false;
-
-	# param from GET
-	if (isset($_REQUEST['lang']) AND isset($this->strings[$_REQUEST['lang']])) {
-		$this->lang = $_REQUEST['lang'];
-		$langOK = true;
-	# current session
-	} elseif (isset($_SESSION['swcLanguage']) AND isset($this->strings[$_SESSION['swcLanguage']])) {
-		$this->lang = $_SESSION['swcLanguage'];
-	} else {
-		# take a look at HTTP_ACCEPT_LANGUAGE
-		foreach (preg_split('/,/', $_SERVER['HTTP_ACCEPT_LANGUAGE']) as $lang)
-		foreach ($this->languages as $key => $filter)
-		if (isset($this->strings[$key]) AND preg_match('/^('.$filter.')(;q=[0-9]\\.[0-9])?$/i', $lang)) {
-			$this->lang = $key;
-			$langOK = true;
-		}
-		# look at HTTP_USER_AGENT
-		if (! $langOK) {
-			reset($this->languages);
-			foreach ($this->languages as $key => $filter)
-			if (isset($this->strings[$key])
-			AND preg_match('/(\(|\[|;[[:space:]])(' . $filter . ')(;|\]|\))/i', $_SERVER['HTTP_USER_AGENT'])) {
-				$this->lang = $key;
-				$langOK = true;
-			}
-		}
-	}
-	if ($langOK) $_SESSION['swcLanguage'] = $this->lang;
-}
-
-# returns a string in a given language
-function _($str)
-{
-	# for english, all is done !
-	if ($this->lang == 'en') return $str;
-
-	# search string at english list (get position)
-	$pos = array_search ($str, $this->strings['en']);
-	if (($pos = array_search ($str, $this->strings['en'])) === FALSE)
-		return $str;
-
-	# found position at current language (ok!)
-	if ($this->strings[$this->lang][$pos] <> '')
-		return $this->strings[$this->lang][$pos];
-
-	# found position at default language (better than nothing!)
-	if ($this->strings[$this->cfgDefaultLanguage][$pos] <> '')
-		return $this->strings[$this->cfgDefaultLanguage][$pos];
-
-	# well, I cannot do anything better !
-	return $str;
-}
-
-function DumpFile($file='', $name='', $isAttachment=false, $isCacheable=false)
-{
-	if ($name == '') $name = basename($file);
-	$pi = pathinfo(strtolower($name));
-	$mimeType = @$this->mimeTypes[@$pi['extension']];
-	if ($mimeType == '') $mimeType = 'application/octet-stream';
-
-	# dot bug with IE
-	if (strstr($_SERVER['HTTP_USER_AGENT'], "MSIE")) {
-		$name = preg_replace('/\./','%2e', $name, substr_count($name, '.') - 1);
-	}
-
-	header("Cache-control: ".($isCacheable ? "public" : "private"));
-	header("Pragma: public");
-	header('MIME-Version: 1.0');
-	header("Content-Type: $mimeType; name =\"".$name."\"");
-
-	if ($isAttachment)
-		header("Content-Disposition: attachment; filename=\"".$name."\"");
-	else
-		header("Content-Disposition: filename=\"".$name."\"");
-
-	if ($file <> '' AND is_readable($file)) {
-		$fp = fopen($file, "r");
-		while (! feof($fp)) {
-			print fread($fp,65536);
-			flush();
-		}
-		fclose($fp);
-	}
-}
-
-function GetInlineFile ($file)
-{
-	if (! $this->cfgInlineFiles) {
-		# if does not exists, write from inline file ! (devel)
-		if (! is_readable($file)) {
-			$f = fopen($file, 'wb');
-			fwrite($f, base64_decode($this->inlineFiles[$file]));
-			fclose($f);
-		}
-		$f = fopen($file, 'r');
-		$data = fread ($f, filesize($file));
-		fclose ($f);
-	} else {
-		if (isset($_SESSION['swcUncodedInlineFiles'][$file])) {
-			$data =  $_SESSION['swcUncodedInlineFiles'][$file];
-		} else {
-			$data = base64_decode($this->inlineFiles[$file]);
-			$_SESSION['swcUncodedInlineFiles'][$file] = $data;
-		}
-	}
-	return $data;
-}
-
-function DumpInlineFile ($file)
-{
-	$this->DumpFile('',$file,false,true);
-	print $this->GetInlineFile ($file);
-}
-
-function GetIP()
-{
-	foreach (array('HTTP_X_FORWARDED','HTTP_VIA','REMOTE_ADDR') as $var) {
-		if (isset($_SERVER[$var])) return $_SERVER[$var];
-	}
-	return 'unknown';
-}                                                                   
-
-# debugging messages
-function Debug ($message, $level=0)
-{
-	if ($level <= $this->debug) {
-		foreach (preg_split('/\n/',$message) as $line) {
-			syslog(LOG_INFO, $this->user.'['.$this->GetIP().']: '.$line);
-		}
-	}
-}
-
-# HTML page
-function Page ($title='', $content='')
-{
-	if (@$_SESSION['swcErrorMessage'] <> '') {
-		$content .= "\n<script language=\"Javascript\">alert(\"{$_SESSION['swcErrorMessage']}\")</script>\n";
-		$_SESSION['swcErrorMessage'] = '';
-	}
-	return $this->Template('style/page.thtml', array(
-		'{title}' => $title,
-		'{charset}' => $this->cfgDefaultCharset,
-		'{content}' => $content,
-		'{style}' => $this->GetUrl('style/'),
-		'{favicon}' => $this->GetUrl('style/favicon.ico')
-	));
-}
-
-# loads an HTML template
-function Template ($file, $vars=array())
-{
-	return str_replace(array_keys($vars), array_values($vars), $this->GetInlineFile($file));
-}
-
-# HTML a href
-function Link ($title, $url='', $name='')
-{
-	if ($name <> '') $name = "name = \"{$name}\"";
-	return ($url == '') ? $title : "<a href=\"{$url}\" {$name}>{$title}</a>";
-}
-
-# HTML img
-function Image ($url, $alt='', $extra='')
-{
-	return ($url == '') ? $title : "<img src=\"{$url}\" alt=\"{$alt}\" border=\"0\" {$extra} />";
-}
-
-# HTML select (combo)
-function Select ($name, $value, $options)
-{
-	$html = "<select name=\"{$name}\">\n";
-	foreach ($options as $key => $description) {
-		$selected = ($key == $value) ? "selected" : "";
-		$html .= "<option value=\"{$key}\" $selected>{$description}</option>\n";
-	}
-	$html .= "</select>\n";
-	return $html;
-}
-
-# HTML check box
-function CheckBox ($name, $value, $checked = false)
-{
-	return $this->Input($name, $value, 'checkbox', $checked ? "checked" : "");
-}
-
-function Input ($name, $value = '', $type = 'text', $extra = '')
-{
-	return "<input type=\"{$type}\" name=\"{$name}\" value=\"".htmlentities($value, ENT_COMPAT, $this->cfgDefaultCharset)."\" {$extra}/>";
-}
 
 
-# return an URL (adding a param)
-function GetUrl ($path='', $arg='', $val='')
-{
-	$get = $_GET;
-	$get['path'] = $path;
-
-	# delete switches from URL
-	$get['lang'] = $get['auth'] = '';
-
-	if ($arg <> '') {
-		if (! is_array($arg)) $get[$arg] = $val;
-		else foreach ($arg as $key=>$value) $get[$key] = $value;
-	}
-
-	# build query string
-	$query = array();
-	foreach ($get as $key=>$value) if ($value <> '') {
-		if ($this->cfgModRewrite <> true OR $key <> 'path') {
-			$query[] = urlencode($key).'='.urlencode($value);
-		}
-	}
-	if (($query = join('&',$query)) <> '') $query = '?'.$query;
-
-	if ($this->cfgModRewrite) {
-		return $this->cfgBaseUrl.str_replace('%2F','/',urlencode($get['path'])).$query;
-	} else {
-		return $_SERVER['PHP_SELF'].$query;
-	}
-}
-
-function ErrorMessage ($msg)
-{
-	$_SESSION['swcErrorMessage'] = @$_SESSION['swcErrorMessage'] . $msg;
-}
-
-function CleanCachedAuth ()
-{
-	$mode = $this->type;
-	@$_SESSION['swcCachedAuth'][$mode][$this->$mode] = '';
-}
-
-function GetAuth ($command)
-{
-	$fn = $this->cfgUserAuth;
-	return $this->$fn($command);
-}
-
-# basic auth
-function BasicAuth ($command = 'get')
-{
-	switch ($command) {
-		case 'get':
-			if (@$_GET['auth'] == 1 OR ($this->cfgAnonymous <> true AND !isset($_SERVER['PHP_AUTH_USER']))) {
-				$_SESSION['swcAuthSubmit'] = true;
-				$time = date("h:i:s");
-				$path = $this->PrintablePath();
-				header("WWW-Authenticate: Basic realm=\"{$path} ($time)\"");
-				header("HTTP/1.0 401 Unauthorized");
-				print $this->Page('unauthorized');
-				exit;
-			}
-			$this->user = stripslashes(@$_SERVER['PHP_AUTH_USER']);
-			$this->pw = stripslashes(@$_SERVER['PHP_AUTH_PW']);
-			break;
-		case 'submit':
-			if (@$_SESSION['swcAuthSubmit']) {
-				$_SESSION['swcAuthSubmit'] = false;
-				$this->user = stripslashes(@$_SERVER['PHP_AUTH_USER']);
-				$this->pw = stripslashes(@$_SERVER['PHP_AUTH_PW']);
-				return true;
-			}
-			return false;
-	}
-}
-
-# form auth
-function FormAuth ($command = 'get')
-{
-	switch ($command) {
-		case 'get':
-			if (@$_GET['auth'] == 1 OR ($this->cfgAnonymous <> true AND !isset($_SESSION['swcUser']))) {
-				$time = date("h:i:s");
-				$path = $this->PrintablePath();
-				$action = $this->GetUrl($this->where);
-				$page = $this->Page('unauthorized',
-					"<p>{$path}</p><p class=\"authform\"><form name=\"authForm\" method=\"post\" action=\"{$action}\">".
-					$this->Input('swcUser', $_SESSION['swcUser']).'<br />'.
-					$this->Input('swcPw', '', 'password').'<br />'.
-					$this->Input('swcSubmit',$this->_('Ok'),'submit').
-					"</form></p>");
-				$page = str_replace("<body>", "<body onload=\"document.authForm.swcUser.focus()\">", $page);
-				print $page;
-				exit;
-			}
-			$this->user = @$_SESSION['swcUser'];
-			$this->pw = @$_SESSION['swcPw'];
-			break;
-		case 'submit':
-			if (isset($_POST['swcSubmit'])) {
-				$this->user = @$_POST['swcUser'];
-				$this->pw = @$_POST['swcPw'];
-				$_SESSION['swcUser'] = $this->user;
-				$_SESSION['swcPw'] = $this->pw;
-				return true;
-			}
-			return false;
-	}
-}
-
-function GetCachedAuth ()
-{
-	$this->user = $this->pw = '';
-	$nextLevel = array('network'=>'','workgroup'=>'network','server'=>'workgroup','share'=>'server');
-	if ($this->GetAuth('submit')) {
-		# store auth in cache
-		$mode = $this->type;
-		$_SESSION['swcCachedAuth'][$mode][$this->$mode]['User'] = $this->user;
-		$_SESSION['swcCachedAuth'][$mode][$this->$mode]['Password'] = $this->pw;
-		for ($mode = $nextLevel[$mode]; $mode <> ''; $mode = $nextLevel[$mode]) {
-			if (! isset($_SESSION['swcCachedAuth'][$mode][$this->$mode])) {
-				$_SESSION['swcCachedAuth'][$mode][$this->$mode]['User'] = $this->user;
-				$_SESSION['swcCachedAuth'][$mode][$this->$mode]['Password'] = $this->pw;
-			}
-		}
-	} elseif (@$_GET['auth'] <> 1) {
-		# get auth from cache
-		for ($mode = $this->type; $mode <> ''; $mode = $nextLevel[$mode]) {
-			if (isset($_SESSION['swcCachedAuth'][$mode][$this->$mode])) {
-				$this->user = $_SESSION['swcCachedAuth'][$mode][$this->$mode]['User'];
-				$this->pw = $_SESSION['swcCachedAuth'][$mode][$this->$mode]['Password'];
-				break;
-			}
-		}
-		if ($this->user == '') $this->GetAuth('get');
-	} else $this->GetAuth('get');
-}
 
 function View ()
 {
@@ -1534,19 +1462,6 @@ function LogoutAction ()
 	exit;
 }
 
-function SendMessageAction ()
-{
-	if (trim($_POST['message']) <> '' AND is_array($_POST['selected'])) {
-		foreach ($_POST['selected'] as $server) {
-			$this->SendMessage($server, $_POST['message']);
-			$this->Debug('message to "'.$server);
-		}
-	}
-	if ($this->status <> '') $this->ErrorMessage($this->status);
-	header('Location: '.$this->FromPath('.'));
-	exit;
-}
-
 function NewFolderAction ()
 {
 	if (trim($_POST['folder']) <> '') {
@@ -1579,17 +1494,6 @@ function NewFileAction ()
 	exit;
 }
 
-function ClamAV ($file)
-{
-	$out = preg_split("\n",`clamscan $file`);
-	if (ereg('^'.$file.': (.*) FOUND$', $out[0], $regs)) {
-		$this->status = 'VIRUS: '.$regs[1];
-		return true;
-	} else {
-		return false;
-	}
-}
-
 function DeleteSelectedAction ()
 {
 	$status = '';
@@ -1608,40 +1512,6 @@ function DeleteSelectedAction ()
 	exit;
 }
 
-
-function PrintFileAction ()
-{
-	if ($_FILES['file']['tmp_name'] <> '') {
-		$this->PrintFile($_FILES['file']['tmp_name']);
-		$this->Debug('print');
-	}
-	if ($this->status <> '') $this->ErrorMessage($this->status);
-	header('Location: '.$this->FromPath('.'));
-	exit;
-}
-
-function CancelSelectedAction ()
-{
-	$status = '';
-	if (is_array($_POST['selected'])) {
-		foreach ($_POST['selected'] as $job) {
-			$this->CancelPrintJob($job);
-			$this->Debug('cancel print job #'.$job);
-			if ($this->status <> '') $status = $this->status;
-		}
-	}
-	if ($status <> '') $this->ErrorMessage($status);
-	header('Location: '.$this->FromPath('.'));
-	exit;
-}
-
-function DownloadFolderAction ()
-{
-	$this->Debug('compress');
-	$this->DumpFile('', $this->name.'.'.$this->cfgArchiver);
-	$this->_SmbClient('compress', $this->path, '', true);
-	exit;
-}
 
 function RenameSelectedAction ()
 {
@@ -1688,11 +1558,6 @@ function PrintablePath ()
 	}
 }
 
-function Icon ($icon, $url='', $size=18)
-{
-	$image = $this->Image($this->GetUrl("style/{$icon}.png"),'#',"align=\"absmiddle\" width=\"$size\" height=\"$size\"");
-	return ($url <> '') ? $this->Link($image, $url) : $image;
-}
 
 # builds a new path from current and a relative path
 function FromPath ($relative='')
@@ -1708,415 +1573,6 @@ function FromPath ($relative='')
 
 }
 
-
-###################################################################
-# SAMBA CLASS - calling smbclient
-###################################################################
-
-class samba {
-
-var $cfgSmbClient = 'smbclient';
-var $user='', $pw='', $cfgAuthMode='';
-var $cfgDefaultServer='localhost', $cfgDefaultUser='', $cfgDefaultPassword='';
-var $types = array ('network', 'workgroup', 'server', 'share');
-var $type = 'network';
-var $network = 'Windows Network';
-var $workgroup='', $server='', $share='', $path='';
-var $name = '';
-var $workgroups=array(), $servers=array(), $shares=array(), $files=array();
-var $cfgCachePath = false;
-var $tempFile = '';
-var $debug = 0;
-var $socketOptions = 'TCP_NODELAY IPTOS_LOWDELAY SO_KEEPALIVE SO_RCVBUF=8192 SO_SNDBUF=8192';
-var $blockSize = 1200;
-var $order = 'NA';
-var $status = '';
-var $parser = array(
-"^added interface ip=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) bcast=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}) nmask=([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})\$" => 'SKIP',
-"Anonymous login successful" => 'SKIP',
-"^Domain=\[(.*)\] OS=\[(.*)\] Server=\[(.*)\]\$" => 'SKIP',
-"^\tSharename[ ]+Type[ ]+Comment\$" => 'SHARES_MODE',
-"^\t---------[ ]+----[ ]+-------\$" => 'SKIP',
-"^\tServer   [ ]+Comment\$" => 'SERVERS_MODE',
-"^\t---------[ ]+-------\$" => 'SKIP',
-"^\tWorkgroup[ ]+Master\$" => 'WORKGROUPS_MODE',
-"^\t(.*)[ ]+(Disk|IPC)[ ]+IPC.*\$" => 'SKIP',
-"^\tIPC\\\$(.*)[ ]+IPC" => 'SKIP',
-"^\t(.*)[ ]+(Disk|Printer)[ ]+(.*)\$" => 'SHARES',
-'([0-9]+) blocks of size ([0-9]+)\. ([0-9]+) blocks available' => 'SIZE',
-"Got a positive name query response from ([0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3})" => 'SKIP',
-"^session setup failed: (.*)\$" => 'LOGON_FAILURE',
-'^tree connect failed: ERRSRV - ERRbadpw' => 'LOGON_FAILURE',
-"^Error returning browse list: (.*)\$" => 'ERROR',
-"^tree connect failed: (.*)\$" => 'ERROR',
-"^Connection to .* failed\$" => 'CONNECTION_FAILED',
-'^NT_STATUS_INVALID_PARAMETER' => 'INVALID_PARAMETER',
-'^NT_STATUS_DIRECTORY_NOT_EMPTY removing' => 'DIRECTORY_NOT_EMPTY',
-'ERRDOS - ERRbadpath \(Directory invalid.\)' => 'NOT_A_DIRECTORY',
-'NT_STATUS_NOT_A_DIRECTORY' => 'NOT_A_DIRECTORY',
-'cd (.*): not a directory' => 'NOT_A_DIRECTORY',
-'^NT_STATUS_NO_SUCH_FILE listing ' => 'NO_SUCH_FILE',
-'^NT_STATUS_ACCESS_DENIED' => 'ACCESS_DENIED',
-'^cd (.*): NT_STATUS_OBJECT_PATH_NOT_FOUND' => 'OBJECT_PATH_NOT_FOUND',
-'^cd (.*): NT_STATUS_OBJECT_NAME_NOT_FOUND' => 'OBJECT_NAME_NOT_FOUND',
-"^\t(.*)\$" => 'SERVERS_OR_WORKGROUPS',
-"^([0-9]+)[ ]+([0-9]+)[ ]+(.*)\$" => 'PRINT_JOBS',
-"^Job ([0-9]+) cancelled" => 'JOB_CANCELLED',
-'^[ ]+(.*)[ ]+([0-9]+)[ ]+(Mon|Tue|Wed|Thu|Fri|Sat|Sun)[ ](Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ ]+([0-9]+)[ ]+([0-9]{2}:[0-9]{2}:[0-9]{2})[ ]([0-9]{4})$' => 'FILES',
-"^message start: ERRSRV - ERRmsgoff" => 'NOT_RECEIVING_MESSAGES',
-"^NT_STATUS_CANNOT_DELETE" => 'CANNOT_DELETE'
-);
-
-function samba ($path='')
-{
-	if ($path <> '') $this->Go ($path);
-	print $path;
-}
-
-# path: WORKGROUP/SERVER/SHARE/PATH
-function Go ($path = '')
-{
-	$a = ($path <> '') ? preg_split('/\//',$path) : array();
-	for ($i=0, $ap=array(); $i<count($a); $i++)
-	switch ($i) {
-		case 0: $this->workgroup = $a[$i]; break;
-		case 1: $this->server = $a[$i]; break;
-		case 2: $this->share = $a[$i]; break;
-		default: $ap[] = $a[$i];
-	}
-	$this->path = join('/', $ap);
-	$this->type = $this->types[(count($a) > 3) ? 3 : count($a)];
-	$this->name = basename($path);
-	$this->parent = $this->_DirectoryName($this->path);
-	$this->fullPath = $path;
-}
-
-function Browse ($order='NA')
-{
-	$this->results = array();
-	$this->shares = $this->servers = $this->workgroups = $this->files = $this->printjobs = array();
-	$server = ($this->server == '') ? $this->cfgDefaultServer : $this->server;
-	# smbclient call
-	switch ($this->type) {
-		case 'share':
-			$this->_SmbClient('dir', $this->path);
-			switch ($this->status) {
-				case 'NO_SUCH_FILE':
-					$this->_SmbClient('queue', $this->path);
-					$this->type = 'printer';
-					break;
-				case 'OBJECT_PATH_NOT_FOUND':
-				case 'NOT_A_DIRECTORY':
-					$this->_Get ();
-			}
-			break;
-		case 'workgroup':
-			if (($server = $this->_MasterOf($this->workgroup)) == $this->cfgDefaultServer) break;
-		default:
-			$this->_SmbClient('', $server);
-	}
-	# fix a smbclient bug (i think)
-	if (! isset($this->servers[$server]))
-		$this->servers[$server] = array ('name'=>$server, 'type'=>'server', 'comment'=>'');
-	# sort and select results
-	$results = array (
-		'network' => 'workgroups', 'workgroup' => 'servers',
-		'server' => 'shares', 'share' => 'files', 'folder' => 'files',
-		'printer' => 'printjobs'
-	);
-	if (isset($results[$this->type])) {
-		$this->results = $this->$results[$this->type];
-		# we need a global var for the compare function
-		$GLOBALS['SMBWEBCLIENT_SORT_BY'] = ($this->order <> '') ? $this->order : 'NA';
-		uasort($this->results, array('samba', '_GreaterThan'));
-	}
-	return $this->status;
-}
-
-function Remove ()
-{
-	$this->_SmbClient('del "'.$this->name.'"', $this->parent);
-	if ($this->status == 'NO_SUCH_FILE') {
-		# it is a folder or not exists
-		$this->_SmbClient('dir', $this->parent);
-		# OK : if it is a folder, delete recursively
-		if (@$this->files[$this->name]['type'] == 'folder') $this->_DeleteFolder ();
-	}
-}
-
-# recursive deletion of SMB folders
-function _DeleteFolder ()
-{
-	$this->_SmbClient('del *', $this->path);
-	$this->_SmbClient('rmdir "'.basename($this->path).'"', $this->_DirectoryName($this->path));
-	if ($this->status == 'DIRECTORY_NOT_EMPTY') {
-		$this->files = array();
-		$savedPath = $this->path;
-		$this->_SmbClient('dir', $this->path);
-		$files = $this->files;
-		foreach ($files as $name => $info) {
-			switch ($info['type']) { 
-				case 'folder':
-					$this->path = $savedPath.'/'.$name;
-					$this->_DeleteFolder();
-					break;
-				case 'file':
-					$this->_SmbClient('del "'.$name.'"', $this->path);
-			}
-		}
-		$this->path = $savedPath;
-		$this->_SmbClient('rmdir "'.basename($this->path).'"', $this->_DirectoryName($this->path));
-	}
-}
-
-function MakeDirectory ()
-{
-	$this->_SmbClient('mkdir "'.$this->name.'"', $this->parent);
-}
-
-function UploadFile ($file)
-{
-	$this->_SmbClient('put "'.$file.'" "'.$this->name.'"', $this->parent);
-}
-
-function PrintFile ($file)
-{
-	$this->_SmbClient('print '.$file);
-}
-
-function RenameFile ($file, $newname)
-{
-	$this->_SmbClient('rename "'.$file.'" "'.$newname.'"', $this->parent);
-}
-
-function CancelPrintJob ($job)
-{
-	$this->_SmbClient('cancel '.$job);
-}
-
-function _GreaterThan ($a, $b)
-{
-	global $SMBWEBCLIENT_SORT_BY;
-	list ($yes, $no) = ($SMBWEBCLIENT_SORT_BY[1] == 'D') ? array(-1,1) : array (1,-1);
-	if ($a['type'] <> $b['type']) {
-		return ($a['type'] == 'file') ? $yes : $no;
-	} else {
-		switch ($SMBWEBCLIENT_SORT_BY[0]) {
-			case 'N': return (strtolower($a['name']) > strtolower($b['name'])) ? $yes : $no;
-			case 'D': return (@$a['time'] > @$b['time']) ? $yes : $no;
-			case 'S': return (@$a['size'] > @$b['size']) ? $yes : $no;
-			case 'C': return (strtolower(@$a['comment']) > strtolower(@$b['comment'])) ? $yes : $no;
-			case 'T': 
-				$pia = pathinfo(strtolower($a['name']));
-				$pib = pathinfo(strtolower($b['name']));
-				return (@$pia['extension'] > @$pib['extension']) ? $yes : $no;
-		}
-	}
-}
-
-function _MasterOf ($workgroup)
-{
-	$saved = array ($this->type, $this->user, $this->pw);
-	if ($this->cfgDefaultUser <> '') {
-		list ($this->user, $this->pw) = array ($this->cfgDefaultUser, $this->cfgDefaultPassword);
-	}
-	$this->type = 'network';
-	$this->_SmbClient('', $this->cfgDefaultServer);
-	list ($this->type, $this->user, $this->pw) = $saved;
-	return $this->workgroups[$this->workgroup]['comment'];
-}
-
-# get a file (including a cache)
-function _Get ()
-{
-	$this->_SmbClient('dir "'.$this->name.'"', $this->parent);
-	if ($this->status == '') {
-		$this->type = 'file';
-		$this->size = $this->files[$this->name]['size'];
-		$this->time = $this->files[$this->name]['time'];
-		if (! $this->cfgCachePath) {
-			$this->DumpFile('', $this->name);
-			$this->_SmbClient('get "'.$this->name.'" - "', $this->parent, '', true);
-		} else {
-			$this->tempFile = $this->cfgCachePath . $this->fullPath;
-			if (@filemtime($this->tempFile) < $this->time OR !file_exists($this->tempFile)) {
-				if (! is_dir($this->_DirectoryName($this->tempFile))) {
-					$this->_MakeDirectoryRecursively($this->_DirectoryName($this->tempFile));
-				}
-				$this->_SmbClient('get "'.$this->name.'" "'.$this->tempFile.'"', $this->parent);
-			}
-			$this->DumpFile ($this->tempFile, $this->name);
-		}
-	}
-}
-
-function SendMessage ($server, $message)
-{
-	$this->_SmbClient ('message', $server, $message);
-}
-
-function _SmbClient ($command='', $path='', $message='', $dumpFile=false)
-{
-	$this->status = '';
-	if ($command == '') {
-		$smbcmd = "-L ".escapeshellarg($path);
-	} elseif ($command == 'message') {
-		$smbcmd = "-M ".escapeshellarg($path);
-	} elseif ($command == 'compress') {
-		$smbcmd = escapeshellarg("//{$this->server}/{$this->share}").
-			" -Tqc - ".escapeshellarg($path);
-	} else {
-		$smbcmd = escapeshellarg("//{$this->server}/{$this->share}").
-			" -c ".escapeshellarg($command);
-		if ($path <> '') $smbcmd .= ' -D '.escapeshellarg($path);
-	}
-	$options = ' -d 0 ';
-	if ($command <> '') {
-		if ($this->workgroup <> '') $options .= ' -W '.escapeshellarg($this->workgroup);
-		if ($this->socketOptions <> '') $options .= ' -O '.escapeshellarg($this->socketOptions);
-		if ($this->blockSize <> '') $options .= ' -b '.$this->blockSize;
-	}
-	if ($this->user <> '') {
-		# not anonymous
-		switch ($this->cfgAuthMode) {
-			case 'SMB_AUTH_ENV': putenv('USER='.$this->user.'%'.$this->pw); break;
-			case 'SMB_AUTH_ARG': $smbcmd .= ' -N -U '.escapeshellarg($this->user.'%'.$this->pw);
-		}
-	}
-	$cmdline = $this->cfgSmbClient.' '.$smbcmd.' '.$options;
-
-
-	if ($message <> '') $cmdline = "echo ".escapeshellarg($message).' | '.$cmdline;
-
-	$cmdline .= ($dumpFile) ? '2>/dev/null' : '2>&1';
-
-	if ($command == 'compress') {
-		$tmpfname = tempnam("/tmp", "swcZ");
-		$archiver = str_replace("@f", $tmpfname, $this->archiverPlugins[$this->cfgArchiver]);
-		@unlink($tmpfname);
-		$cmdline .= $archiver;
-		$dumpFile = true;
-	}
-
-	return $this->_ParseSmbClient ($cmdline, $dumpFile);
-}
-
-function _ParseSmbClient ($cmdline, $dumpFile=false)
-{
-	$sec_cmdline = str_replace($this->pw, '****', $cmdline);
-	if (! $dumpFile) {
-		$output = shell_exec($cmdline);
-		$debug_command = ($this->debug > 1) ? "\n[smbclient]\n{$output}\n[/smbclient]" : "";
-	} else {
-		# output a file
-		passthru($cmdline);
-	}
-	$this->Debug("{$sec_cmdline}{$debug_command}",1);
-	$lineType = $mode = '';
-	foreach (preg_split('/\n/', $output) as $line) if ($line <> '') {
-		$regs = array();
-		reset ($this->parser);
-		$linetype = 'skip';
-		$regs = array();
-		foreach ($this->parser as $regexp => $type) {
-			# preg_match is much faster than ereg (Bram Daams)
-			if (preg_match('/'.$regexp.'/', $line, $regs)) {
-				$lineType = $type;
-				break;
-			}
-		}
-		switch ($lineType) {
-			case 'SKIP': continue;
-			case 'SHARES_MODE': $mode = 'shares'; break;
-			case 'SERVERS_MODE': $mode = 'servers'; break;
-			case 'WORKGROUPS_MODE': $mode = 'workgroups'; break;
-			case 'SHARES':
-				$name = trim($regs[1]);
-				$type = strtolower($regs[2]);
-				if ($this->cfgHideSystemShares == true AND $name[strlen($name)-1] == '$') break;
-				if ($this->cfgHidePrinterShares == true AND $type == 'printer') break;
-				$this->shares[$name] = array (
-						'name' => $name,
-						'type' => $type,
-						'comment' => $regs[3]
-				);
-				break;
-			case 'SERVERS_OR_WORKGROUPS':
-				$name = trim(substr($line,1,21));
-				$comment = trim(substr($line, 22));
-				if ($mode == 'servers') {
-					$this->servers[$name] = array ('name' => $name, 'type' => 'server', 'comment' => $comment);
-				} else {
-					$this->workgroups[$name] = array ('name' => $name, 'type' => 'workgroup', 'comment' => $comment);
-				}
-				break;
-			case 'FILES':
-				# with attribute ?
-				if (preg_match("/^(.*)[ ]+([D|A|H|S|R]+)$/", trim($regs[1]), $regs2)) {
-					$attr = trim($regs2[2]);
-					$name = trim($regs2[1]);
-				} else {
-					$attr = '';
-					$name = trim($regs[1]);
-				}
-				if ($name <> '.' AND $name <> '..') {
-					$type = (strpos($attr,'D') === false) ? 'file' : 'folder';
-					$this->files[$name] = array (
-						'name' => $name,
-						'attr' => $attr,
-						'size' => $regs[2],
-						'time' => $this->_ParseTime($regs[4],$regs[5],$regs[7],$regs[6]),
-						'type' => $type
-					);
-				}
-				break;
-			case 'PRINT_JOBS':
-				$name = $regs[1].' '.$regs[3];
-				$this->printjobs[$name] = array(
-					'name'=>$name,
-					'type'=>'printjob',
-					'id'=>$regs[1],
-					'size'=>$regs[2]
-				);
-				break;
-			case 'SIZE':
-				$this->size = $regs[1] * $regs[2];
-				$this->available = $regs[3] * $regs[2];
-				break;
-			case 'ERROR': $this->status = $regs[1]; break;
-			default:  $this->status = $lineType;
-		}
-	}
-}
-
-# returns unix time from smbclient output
-function _ParseTime ($m, $d, $y, $hhiiss)
-{
-	$his= preg_split('/:/', $hhiiss);
-	$im = 1 + strpos("JanFebMarAprMayJunJulAugSepOctNovDec", $m) / 3;
-	return mktime($his[0], $his[1], $his[2], $im, $d, $y);
-}
-
-# make a directory recursively
-function _MakeDirectoryRecursively ($path, $mode = 0777)
-{
-	if (strlen($path) == 0) return 0;
-	if (is_dir($path)) return 1;
-	elseif ($this->_DirectoryName($path) == $path) return 1;
-	return ($this->_MakeDirectoryRecursively($this->_DirectoryName($path), $mode)
-		and mkdir($path, $mode));
-}
-
-# I do not like PHP dirname
-function _DirectoryName ($path='')
-{
-	$a = preg_split('/\//', $path);
-	$n = (trim($a[count($a)-1]) == '') ? (count($a)-2) : (count($a)-1);
-	for ($dir=array(),$i=0; $i<$n; $i++) $dir[] = $a[$i];
-	return join('/',$dir);
-}
-
-}
 
 
 ###################################################################
