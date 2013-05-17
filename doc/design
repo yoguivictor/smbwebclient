@@ -1,0 +1,18 @@
+COLUMNS:
+
+mount_point (access from smbwebclient.php?path=mount_point/... or
+/smbwebclient/mount_point/...)
+
+stream_wrapper (file:, smbclient:
+
+base_url (file:///path, smbclient://server/share/path)
+
+options (user=?,pass=?,ro,rw,...) can fix an user, password
+	bool noauth (default false)
+	bool r (default false)
+	bool w (default true)
+	
+
+
+/archivos	smbclient://servidor/recurso/ruta	noauth,r
+/local		file:///home/vmvarela/compartido
