@@ -1,0 +1,1 @@
+smbwebclient.php is a simple script to use Windows Networks from a web browser.
